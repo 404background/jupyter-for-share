@@ -122,11 +122,11 @@ function Invoke-Setup {
 次の手順:
   1. ユーザー環境を作成する (例: alice さん用。ポートは自動で決まります)
        jfs.cmd add alice
-  2. 表示された URL を本人に伝え、別の PC のブラウザで開いてもらう
-     (全ユーザー共通のサーバー管理ウィンドウが 1 つ開きます。閉じると全員のサーバーが停止します)
-     PC の再起動後は 'jfs.cmd start' で開き直すか、'jfs.cmd autostart on' でサインイン時に自動で開けます
-  3. 一覧・停止などは 'jfs.cmd help' を参照
-  4. 別の PC からつながらない場合は 'jfs.cmd network' (ネットワーク・ファイアウォール設定の確認と変更)
+  2. サーバーを起動する (実行したウィンドウがサーバー管理ウィンドウになり、全員のログが表示されます。閉じると停止)
+       jfs.cmd start
+  3. 表示された URL を本人に伝え、別の PC のブラウザで開いてもらう
+  4. PC の再起動後は 'jfs.cmd start' を実行するか、'jfs.cmd autostart on' でサインイン時に自動で起動できます
+  5. 別の PC からつながらない場合は 'jfs.cmd network'、それ以外の問題は 'jfs.cmd doctor'
 '@
 }
 

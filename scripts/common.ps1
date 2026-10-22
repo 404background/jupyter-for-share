@@ -298,10 +298,36 @@ function Assert-AclFileSystem([string]$Path) {
     }
 }
 
+# リポジトリの上の階層 (E:\jupyter-for-share なら E:\) を、サーバー実行用アカウントが参照できるようにする。
+# Python などはパスの途中のフォルダ (ドライブ直下を含む) の情報を読むため、ここが読めないと PermissionError になる。
+# このフォルダ自体だけへの許可 (下のフォルダには引き継がない) なので、他のフォルダの中身は見えない。
+function Grant-AncestorAccess {
+    $sid = Get-LocalGroupSid
+    $dir = Split-Path -Parent $script:RepoRoot.TrimEnd('\')
+    while ($dir) {
+        $acl = Get-Acl -LiteralPath $dir
+        $has = @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | Where-Object {
+            $_.IdentityReference.Value -eq $sid -and $_.AccessControlType -eq 'Allow' }).Count -gt 0
+        if (-not $has) {
+            Invoke-Native 'icacls.exe' @((Format-IcaclsPath $dir), '/grant', "*$($sid):(RX)", '/Q') -Quiet
+        }
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+}
+
+# icacls に渡すパス: "E:\" のようにドライブ直下は末尾の \ を外す (E: だとカレントディレクトリの意味になるので E:\. にする)
+function Format-IcaclsPath([string]$Path) {
+    if ($Path -match '^[A-Za-z]:\\?$') { return ($Path.Substring(0, 2) + '\.') }
+    return $Path
+}
+
 # ユーザー環境の親フォルダ: 管理者だけがフル権限。サーバー用ユーザーはこのフォルダ自体の参照のみ
 function Initialize-InstancesRoot($Config) {
     Assert-AclFileSystem $script:RepoRoot
     Protect-RepoFolder
+    Grant-AncestorAccess
     $root = Get-InstancesRoot $Config
     if ($root.Length -le 3) { throw "instancesRoot にドライブ直下 ($root) は指定できません。" }
     if (-not (Test-Path -LiteralPath $root)) { New-Item -ItemType Directory -Path $root -Force | Out-Null }
