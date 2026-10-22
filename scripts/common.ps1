@@ -33,7 +33,7 @@ function Test-Admin {
 }
 
 # 管理者でなければ、同じ引数で UAC 昇格して実行し直す (呼び出し元はこの後 exit すること)
-function Start-Elevated([string]$ScriptPath, [hashtable]$BoundParameters) {
+function Start-Elevated([string]$ScriptPath, [System.Collections.IDictionary]$BoundParameters) {
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$ScriptPath`"")
     foreach ($k in $BoundParameters.Keys) {
         $v = $BoundParameters[$k]
@@ -190,9 +190,9 @@ function Get-CurrentUserSid {
     return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 }
 
-$script:LsaTypeLoaded = $false
 function Add-AccountRight([string]$Sid, [string]$Right) {
-    if (-not $script:LsaTypeLoaded) {
+    # setup-server.ps1 から jfs.ps1 を同じプロセスで呼ぶため、型が既に読み込まれていれば再定義しない
+    if (-not ('JfsLsa' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -245,7 +245,6 @@ public static class JfsLsa {
     }
 }
 '@
-        $script:LsaTypeLoaded = $true
     }
     [JfsLsa]::AddRight($Sid, $Right)
 }

@@ -100,9 +100,8 @@ function Invoke-Setup {
     # ---- ネットワーク・電源 ----
     $public = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object { $_.NetworkCategory -eq 'Public' })
     foreach ($n in $public) {
-        Write-Warn ("ネットワーク '$($n.Name)' が「パブリック」になっています。この状態では他の PC から接続できません。" +
-                    "信頼できる LAN であれば次のコマンドで「プライベート」に変更してください:`n" +
-                    "    Set-NetConnectionProfile -InterfaceIndex $($n.InterfaceIndex) -NetworkCategory Private")
+        Write-Warn ("ネットワーク '$($n.Name)' が「パブリック」になっています。他の PC からつながらない場合は " +
+                    "'jfs.cmd network' (または 'jfs.cmd network -SetPrivate') を実行してください。")
     }
     if ($DisableSleep) {
         & powercfg.exe /change standby-timeout-ac 0

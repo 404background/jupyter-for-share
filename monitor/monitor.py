@@ -8,6 +8,7 @@
 
 import argparse
 import collections
+import contextlib
 import ctypes
 import json
 import os
@@ -319,6 +320,25 @@ def make_handler(sampler):
     return Handler
 
 
+class DualStackServer(ThreadingHTTPServer):
+    """IPv6 と IPv4 の両方で待ち受ける (コンピューター名が IPv6 アドレスに解決されても接続できるように)"""
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        with contextlib.suppress(Exception):
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
+def create_server(bind, port, handler):
+    if bind in ("", "*", "0.0.0.0", "::") and socket.has_ipv6:
+        try:
+            return DualStackServer(("::", port), handler)
+        except OSError:
+            pass
+    return ThreadingHTTPServer(("0.0.0.0" if bind in ("", "*", "::") else bind, port), handler)
+
+
 def main():
     ap = argparse.ArgumentParser(description="jupyter-for-share resource monitor")
     ap.add_argument("--bind", default="0.0.0.0")
@@ -329,7 +349,7 @@ def main():
 
     sampler = Sampler(args.users, args.disk)
     sampler.start()
-    server = ThreadingHTTPServer((args.bind, args.port), make_handler(sampler))
+    server = create_server(args.bind, args.port, make_handler(sampler))
     print("monitor: http://%s:%d/ (GPU: %s)" % (args.bind, args.port, sampler.gpu_source), flush=True)
     server.serve_forever()
 
