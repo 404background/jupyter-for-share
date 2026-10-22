@@ -111,6 +111,7 @@ jfs.cmd add alice
 | `jfs.cmd remove <ユーザー名> [-DeleteFiles]` | 環境を削除。`-DeleteFiles` を付けるとフォルダも削除 |
 | `jfs.cmd monitor [-Port 8000]` | リソースモニターを設置・更新して起動 |
 | `jfs.cmd monitor-stop` | リソースモニターを停止 |
+| `jfs.cmd doctor [ユーザー名]` | つながらないときの診断 (問題のある箇所に [NG] を表示) |
 | `jfs.cmd firewall` | ファイアウォール規則を作り直す |
 | `jfs.cmd protect [-Background]` | 他フォルダへのアクセス禁止を設定 (設定済みの場所は飛ばす。`-Force` で付け直し) |
 | `jfs.cmd protect -Status` | アクセス禁止の設定状況 (バックグラウンド処理の進み具合) |
@@ -254,6 +255,15 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 | [psutil](https://github.com/giampaolo/psutil) | BSD 3-Clause | リソースモニター |
 
 ## トラブルシューティング
+
+まず `jfs.cmd doctor` を実行してください。アカウント・自動起動タスク・待ち受けポート・このPCからの HTTP 応答・
+ファイアウォール・ネットワークの種類・ログを確認し、問題のある箇所に `[NG]` と原因を表示します
+(`jfs.cmd doctor <ユーザー名>` で 1 人分だけ)。
+
+- **以前のバージョンで作成に失敗した / 一覧に出ない**: 以前のバージョンには、Windows PowerShell 5.1 で設定ファイル
+  (`servers.json`) の一覧部分が壊れる不具合がありました。最新版では読み込み時に自動で修復します (修復前のファイルは `servers.json.bak`)。
+  - `jfs.cmd list` で状態が「未登録」のユーザーは、`jfs.cmd set <ユーザー名>` で自動起動を登録し直せます
+  - 作成途中のフォルダやアカウントが残っていて作成できない場合は、`jfs.cmd remove <ユーザー名> -DeleteFiles` で片付けてから作り直してください
 
 - **別の PC からつながらない**
   - `jfs.cmd list` で「起動中」になっているか確認。なっていなければ `jfs.cmd logs <ユーザー名>` でエラーを確認

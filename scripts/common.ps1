@@ -11,6 +11,13 @@ $script:MonitorAccount    = 'jfsmon'
 $script:MonitorDir        = Join-Path $script:RepoRoot 'monitor'
 $script:RepositoryUrl     = 'https://github.com/404background/jupyter-for-share'
 
+# Windows PowerShell 5.1 には配列に Count プロパティを足す型情報があり、関数の引数などを経由した配列を
+# ConvertTo-Json が {"value": [...], "Count": n} という形で書き出してしまう (servers.json が壊れる)。
+# この型情報を無効にして、配列が常に [...] で書き出されるようにする。
+if ($PSVersionTable.PSVersion.Major -le 5) {
+    Remove-TypeData -TypeName System.Array -ErrorAction SilentlyContinue
+}
+
 # よく使う SID (Windows の表示言語に関係なく使える)
 $script:SidSystem = 'S-1-5-18'
 $script:SidAdmins = 'S-1-5-32-544'
@@ -87,15 +94,53 @@ function Remove-Value($Object, [string]$Name) {
     if ($Object.PSObject.Properties[$Name]) { $Object.PSObject.Properties.Remove($Name) }
 }
 
+# 旧バージョンが書き出した {"value": [...], "Count": n} を配列に戻す
+$script:ConfigRepaired = $false
+function Repair-JsonValue($Value) {
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $names = @($Value.PSObject.Properties | ForEach-Object { $_.Name })
+        if ($names.Count -eq 2 -and ($names -contains 'value') -and ($names -contains 'Count')) {
+            $script:ConfigRepaired = $true
+            return ,@(foreach ($x in @($Value.value)) { Repair-JsonValue $x })
+        }
+        foreach ($prop in @($Value.PSObject.Properties)) { $prop.Value = Repair-JsonValue $prop.Value }
+        return $Value
+    }
+    if ($Value -is [System.Array]) {
+        return ,@(foreach ($x in $Value) { Repair-JsonValue $x })
+    }
+    return $Value
+}
+
 function Read-Config {
     if (-not (Test-Path -LiteralPath $script:ConfigPath)) {
         Copy-Item -LiteralPath $script:ExampleConfigPath -Destination $script:ConfigPath
         Write-Info "設定ファイルを作成しました: $script:ConfigPath"
     }
-    $cfg = Get-Content -LiteralPath $script:ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $script:ConfigRepaired = $false
+    $cfg = Repair-JsonValue (Get-Content -LiteralPath $script:ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json)
     if ($null -eq (Get-Value $cfg 'defaults')) { Set-Value $cfg 'defaults' ([pscustomobject]@{}) }
-    Set-Value $cfg 'users' @(@(Get-Value $cfg 'users' @()) | Where-Object { $null -ne $_ })
     if ($null -eq (Get-Value $cfg 'monitor')) { Set-Value $cfg 'monitor' ([pscustomobject]@{ enabled = $false; port = 8000 }) }
+
+    # ユーザー一覧: 入れ子になった配列を平らにし、名前のない壊れた要素は捨てる
+    $users = New-Object System.Collections.ArrayList
+    foreach ($item in @(Get-Value $cfg 'users' @())) {
+        foreach ($u in @($item)) {
+            if ($u -is [System.Management.Automation.PSCustomObject] -and $u.PSObject.Properties['name'] -and $u.name) {
+                if (-not ($users | Where-Object { $_.name -eq $u.name })) { [void]$users.Add($u) }
+            } else {
+                $script:ConfigRepaired = $true
+            }
+        }
+    }
+    Set-Value $cfg 'users' $users.ToArray()
+
+    if ($script:ConfigRepaired) {
+        $backup = "$($script:ConfigPath).bak"
+        Copy-Item -LiteralPath $script:ConfigPath -Destination $backup -Force
+        Save-Config $cfg
+        Write-Warn "設定ファイルの壊れていた部分を修復しました (修復前: $backup)。"
+    }
     return $cfg
 }
 

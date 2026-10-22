@@ -30,7 +30,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-$script:Commands = @('help', 'list', 'add', 'set', 'remove', 'start', 'stop', 'restart',
+$script:Commands = @('help', 'list', 'add', 'doctor', 'set', 'remove', 'start', 'stop', 'restart',
                      'url', 'token', 'logs', 'upgrade', 'reset-venv', 'firewall', 'protect', 'unprotect',
                      'monitor', 'monitor-stop')
 
@@ -50,6 +50,7 @@ $script:CommandHelp = @{
     'reset-venv'   = "jfs.cmd reset-venv <ユーザー名> [-Force]`n  venv を作り直します (pip で入れたパッケージは消えます。work フォルダのファイルは残ります)。"
     'monitor'      = "jfs.cmd monitor [-Port 番号] [-AllowFrom 範囲]`n  リソースモニター (CPU / メモリ / GPU) を設置・更新して起動します。既定のポートは 8000。"
     'monitor-stop' = "jfs.cmd monitor-stop`n  リソースモニターを停止します (再開は jfs.cmd monitor)。"
+    'doctor'       = "jfs.cmd doctor [ユーザー名]`n  つながらないときの診断です。アカウント・自動起動タスク・待ち受けポート・HTTP 応答・`n  ファイアウォール・ネットワークの種類・ログを確認し、問題のある箇所に [NG] を表示します。"
     'firewall'     = "jfs.cmd firewall`n  Windows ファイアウォール規則を設定ファイル (servers.json) に合わせて作り直します。"
     'protect'      = "jfs.cmd protect [-Background] [-Force]`njfs.cmd protect -Status`n  サーバー実行用アカウントから他のフォルダへのアクセスを禁止します。設定済みの場所は飛ばします。`n  -Background: 裏で実行 / -Force: 設定済みの場所も付け直す / -Status: 進み具合を表示"
     'unprotect'    = "jfs.cmd unprotect`n  protect で設定したアクセス禁止を解除します。"
@@ -85,6 +86,7 @@ jupyter-for-share 管理コマンド
   jfs.cmd monitor-stop                  停止
 
 サーバー全体
+  jfs.cmd doctor [ユーザー名]           つながらないときの診断
   jfs.cmd firewall                      ファイアウォール規則を更新
   jfs.cmd protect [-Background]         他のフォルダへのアクセスを禁止 (-Status で進み具合)
   jfs.cmd unprotect                     アクセス禁止を解除
@@ -240,7 +242,7 @@ function Initialize-InstanceFolders($UserEnv, [string]$AccountSid) {
                      (Join-Path $p.Home 'AppData\Roaming'), (Join-Path $p.Home 'AppData\Local'))) {
         if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
     }
-    (Get-Item -LiteralPath $p.Server).Attributes = 'Directory, Hidden'
+    (Get-Item -LiteralPath $p.Server -Force).Attributes = 'Directory, Hidden'
 
     Invoke-Native 'icacls.exe' @($p.Root, '/inheritance:r', '/grant:r',
         "*$($script:SidSystem):(OI)(CI)F", "*$($script:SidAdmins):(OI)(CI)F",
@@ -298,6 +300,12 @@ function Install-UserVenv($Config, $UserEnv) {
     Write-Ok "venv の準備ができました (パッケージ: $($pkgs -join ', '))。"
 }
 
+# テンプレート内の @@名前@@ を置き換える
+function Expand-Template([string]$Text, [hashtable]$Values) {
+    foreach ($k in $Values.Keys) { $Text = $Text.Replace("@@$k@@", [string]$Values[$k]) }
+    return $Text
+}
+
 # cmd.exe はバッチファイルを OEM コードページ (日本語環境では CP932) で読む
 function Write-BatchFile([string]$Path, [string]$Content) {
     $oem = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
@@ -309,6 +317,8 @@ function Write-BatchFile([string]$Path, [string]$Content) {
 function Write-ServerFiles($Config, $UserEnv) {
     $p = Get-InstancePaths $UserEnv
     $bind = [string](Get-Value $Config.defaults 'bindAddress' '0.0.0.0')
+    # '*' は IPv4 と IPv6 の両方で待ち受ける (コンピューター名が IPv6 アドレスに解決されても接続できるように)
+    if ($bind -eq '0.0.0.0') { $bind = '*' }
 
     $py = @'
 # jupyter-for-share が生成したファイルです。jfs.cmd で上書きされるため直接編集しないでください。
@@ -322,8 +332,7 @@ c.ServerApp.root_dir = r'@@WORK@@'
 c.IdentityProvider.token = '@@TOKEN@@'
 c.ServerApp.terminado_settings = {'shell_command': ['powershell.exe', '-NoLogo']}
 '@
-    $py = $py.Replace('@@BIND@@', $bind).Replace('@@PORT@@', [string][int]$UserEnv.port).
-              Replace('@@WORK@@', $p.Work).Replace('@@TOKEN@@', [string]$UserEnv.token)
+    $py = Expand-Template $py @{ BIND = $bind; PORT = [string][int]$UserEnv.port; WORK = $p.Work; TOKEN = [string]$UserEnv.token }
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText((Join-Path $p.Config 'jupyter_server_config.py'), $py, $utf8)
 
@@ -356,9 +365,10 @@ echo ===== %DATE% %TIME% start >> "@@LOG@@"
 "@@LABVENV@@\Scripts\python.exe" -m jupyterlab >> "@@LOG@@" 2>&1
 exit /b %ERRORLEVEL%
 '@
-    $cmd = $cmd.Replace('@@HOME@@', $p.Home).Replace('@@TMP@@', $p.Tmp).Replace('@@CONFIG@@', $p.Config).
-                Replace('@@DATA@@', $p.Data).Replace('@@RUNTIME@@', $p.Runtime).Replace('@@VENV@@', $p.Venv).
-                Replace('@@WORK@@', $p.Work).Replace('@@LOG@@', $p.Log).Replace('@@LABVENV@@', $p.LabVenv)
+    $cmd = Expand-Template $cmd @{
+        HOME = $p.Home; TMP = $p.Tmp; CONFIG = $p.Config; DATA = $p.Data; RUNTIME = $p.Runtime
+        VENV = $p.Venv; WORK = $p.Work; LOG = $p.Log; LABVENV = $p.LabVenv
+    }
     Write-BatchFile $p.RunCmd $cmd
     Write-UserReadme $Config $UserEnv
 }
@@ -443,25 +453,73 @@ function Get-JfsTask([string]$TaskName) {
     return Get-ScheduledTask -TaskPath $script:TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue
 }
 
-function Start-JfsTask([string]$TaskName, [int]$P, [string]$Label, [string]$LogHint) {
+# タスクスケジューラの結果コードを説明に変える
+# 結果コードを 0～0xFFFFFFFF の数値にそろえる (負の Int32 で返ることがあるため)
+function ConvertTo-ResultCode($Code) {
+    $v = [long]$Code
+    if ($v -lt 0) { $v += 4294967296 }
+    return $v
+}
+
+function Get-TaskResultText($Code) {
+    $hex = '0x{0:X8}' -f (ConvertTo-ResultCode $Code)
+    $known = @{
+        '0x00000000' = '正常終了'
+        '0x00041300' = '実行準備完了'
+        '0x00041301' = '実行中'
+        '0x00041303' = 'まだ一度も実行されていない'
+        '0x00041306' = '停止された'
+        '0x8007052E' = 'ログオン失敗: パスワードが正しくない (jfs.cmd set <ユーザー名> で再登録してください)'
+        '0x80070569' = 'ログオン失敗: 「バッチ ジョブとしてログオン」が許可されていない (グループ ポリシーで制限されている可能性)'
+        '0x80070533' = 'ログオン失敗: アカウントが無効になっている'
+        '0x800710E0' = 'タスクの起動が拒否された'
+        '0x00000001' = 'JupyterLab (Python) がエラーで終了した (ログを確認してください)'
+    }
+    if ($known.ContainsKey($hex)) { return "$hex ($($known[$hex]))" }
+    return $hex
+}
+
+function Show-LogTail([string]$LogPath, [int]$Lines = 15) {
+    if ($LogPath -and (Test-Path -LiteralPath $LogPath)) {
+        Write-Host "  ログ ($LogPath) の末尾:"
+        Get-Content -LiteralPath $LogPath -Tail $Lines -Encoding UTF8 | ForEach-Object { Write-Host "    $_" }
+    } elseif ($LogPath) {
+        Write-Host "  ログファイルがありません ($LogPath)。起動用のバッチファイルが実行されていません (アカウントのログオンに失敗している可能性)。"
+    }
+}
+
+function Start-JfsTask([string]$TaskName, [int]$P, [string]$Label, [string]$LogPath) {
     $task = Get-JfsTask $TaskName
     if (-not $task) { throw "$Label のタスクがありません。作り直してください。" }
     Enable-ScheduledTask -InputObject $task | Out-Null
     if (Test-PortListening $P) {
         Write-Info "$Label は起動済みです。"
-        return
+        return $true
     }
+    $startedAt = Get-Date
     Start-ScheduledTask -InputObject $task
-    Write-Info "$Label を起動しています..."
-    $deadline = (Get-Date).AddSeconds(90)
+    Write-Info "$Label を起動しています (初回は 1 分ほどかかることがあります)..."
+    $deadline = $startedAt.AddSeconds(120)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 2
         if (Test-PortListening $P) {
             Write-Ok "$Label が起動しました (ポート $P)。"
-            return
+            return $true
+        }
+        # タスク自体が終わってしまった (ログオン失敗や Python のエラー) なら待たずに原因を表示する
+        $info = Get-ScheduledTaskInfo -InputObject (Get-JfsTask $TaskName) -ErrorAction SilentlyContinue
+        $state = (Get-JfsTask $TaskName).State
+        if ($info -and $state -ne 'Running' -and $info.LastRunTime -ge $startedAt.AddSeconds(-5) -and
+            (ConvertTo-ResultCode $info.LastTaskResult) -ne 0x41301) {
+            break
         }
     }
-    Write-Warn "$Label がポート $P で応答しません。'jfs.cmd logs $LogHint' でログを確認してください。"
+    $info = Get-ScheduledTaskInfo -InputObject (Get-JfsTask $TaskName) -ErrorAction SilentlyContinue
+    Write-Warn "$Label がポート $P で起動しませんでした。"
+    if ($info) { Write-Host "  タスクの結果: $(Get-TaskResultText $info.LastTaskResult)" }
+    Show-LogTail $LogPath
+    Write-Host "  詳しい診断: jfs.cmd doctor"
+    return $false
 }
 
 # 停止したものは Windows を再起動しても起動しない (start で再開)
@@ -480,7 +538,7 @@ function Stop-JfsTask([string]$TaskName, [string]$Account, [string]$Label) {
 
 function Get-TaskStatus([string]$TaskName, [int]$P) {
     $task = Get-JfsTask $TaskName
-    if (-not $task) { return '未設置' }
+    if (-not $task) { return "未登録 ('jfs.cmd set <ユーザー名>' で再登録)" }
     if ($task.State -eq 'Disabled') { return '停止' }
     if (Test-PortListening $P) { return '起動中' }
     if ($task.State -eq 'Running') { return '起動処理中' }
@@ -492,7 +550,7 @@ function Register-UserTask($UserEnv) {
         (Get-InstancePaths $UserEnv).Work "jupyter-for-share: $($UserEnv.name) (port $($UserEnv.port))"
 }
 function Start-UserEnv($UserEnv) {
-    Start-JfsTask (Get-TaskName $UserEnv) ([int]$UserEnv.port) "ユーザー '$($UserEnv.name)' の環境" $UserEnv.name
+    return (Start-JfsTask (Get-TaskName $UserEnv) ([int]$UserEnv.port) "ユーザー '$($UserEnv.name)' の環境" (Get-InstancePaths $UserEnv).Log)
 }
 function Stop-UserEnv($UserEnv) {
     Stop-JfsTask (Get-TaskName $UserEnv) (Get-AccountName $UserEnv) "ユーザー '$($UserEnv.name)' の環境"
@@ -530,10 +588,10 @@ echo ===== %DATE% %TIME% start >> "@@LOG@@"
 "@@PY@@" "@@SCRIPT@@" --bind @@BIND@@ --port @@PORT@@ --users "@@USERS@@" --disk "@@DISK@@" >> "@@LOG@@" 2>&1
 exit /b %ERRORLEVEL%
 '@
-    $cmd = $cmd.Replace('@@TMP@@', $m.Tmp).Replace('@@LOG@@', $m.Log).Replace('@@PY@@', $py).
-                Replace('@@SCRIPT@@', $m.Script).Replace('@@BIND@@', $bind).
-                Replace('@@PORT@@', [string][int]$Config.monitor.port).Replace('@@USERS@@', $m.UsersFile).
-                Replace('@@DISK@@', (Get-InstancesRoot $Config))
+    $cmd = Expand-Template $cmd @{
+        TMP = $m.Tmp; LOG = $m.Log; PY = $py; SCRIPT = $m.Script; BIND = $bind
+        PORT = [string][int]$Config.monitor.port; USERS = $m.UsersFile; DISK = (Get-InstancesRoot $Config)
+    }
     Write-BatchFile $m.RunCmd $cmd
 
     Set-Value $Config.monitor 'enabled' $true
@@ -789,6 +847,106 @@ function Show-ProtectStatus($Config) {
     }
 }
 
+# ユーザー環境の実行用アカウント・自動起動タスク・フォルダ (指定時) を削除する。
+# 設定ファイルに載っていない、作成途中で残ったものも片付けられるようにしている。
+function Remove-UserLeftovers([string]$UserName, [string]$Folder) {
+    $taskName = "jfs-$UserName"
+    $account = "$($script:UserPrefix)$UserName"
+    if ((Get-JfsTask $taskName) -or (Get-LocalUser -Name $account -ErrorAction SilentlyContinue)) {
+        Stop-JfsTask $taskName $account "ユーザー '$UserName' の環境"
+    }
+    $task = Get-JfsTask $taskName
+    if ($task) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }
+    Remove-ServiceAccount $account
+    if ($Folder -and (Test-Path -LiteralPath $Folder)) {
+        Remove-Item -LiteralPath $Folder -Recurse -Force
+        Write-Ok "フォルダを削除しました: $Folder"
+    }
+}
+
+# ---- 診断 (jfs.cmd doctor) ----
+
+function Write-Check([bool]$Ok, [string]$Message) {
+    if ($Ok) { Write-Host "  [OK] $Message" -ForegroundColor Green } else { Write-Host "  [NG] $Message" -ForegroundColor Red }
+}
+
+function Test-HttpOk([string]$Url) {
+    try {
+        $r = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 5
+        return ($r.StatusCode -eq 200)
+    } catch { return $false }
+}
+
+function Test-ServiceTarget([string]$Label, [string]$TaskName, [string]$Account, [int]$P, [string]$RuleName,
+                            [string]$HttpPath, [string]$LogPath) {
+    Write-Host ''
+    Write-Host "== $Label (ポート $P) ==" -ForegroundColor White
+    $user = Get-LocalUser -Name $Account -ErrorAction SilentlyContinue
+    Write-Check ([bool]$user -and $user.Enabled) "実行用アカウント $Account"
+    $task = Get-JfsTask $TaskName
+    if ($task) {
+        $info = Get-ScheduledTaskInfo -InputObject $task
+        Write-Check ($task.State -ne 'Disabled') "自動起動タスク $($script:TaskPath)$TaskName (状態: $($task.State))"
+        Write-Host "       前回の実行: $($info.LastRunTime) / 結果: $(Get-TaskResultText $info.LastTaskResult)"
+    } else {
+        Write-Check $false "自動起動タスク $($script:TaskPath)$TaskName がありません"
+    }
+    $conn = @(Get-NetTCPConnection -LocalPort $P -State Listen -ErrorAction SilentlyContinue)
+    if ($conn.Count -gt 0) {
+        $procs = @($conn | ForEach-Object { (Get-Process -Id $_.OwningProcess -IncludeUserName -ErrorAction SilentlyContinue) } |
+                   Where-Object { $_ } | ForEach-Object { "$($_.ProcessName) ($($_.UserName))" } | Select-Object -Unique)
+        Write-Check $true "ポート $P で待ち受け中: $($procs -join ', ') / アドレス: $(@($conn | ForEach-Object { $_.LocalAddress }) -join ', ')"
+        Write-Check (Test-HttpOk "http://127.0.0.1:$P$HttpPath") "このPCからの HTTP 接続 (http://127.0.0.1:$P$HttpPath)"
+    } else {
+        Write-Check $false "ポート $P で待ち受けていません (サーバーが起動していない)"
+    }
+    $rule = Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue
+    if ($rule) {
+        $addr = (Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule).RemoteAddress -join ', '
+        Write-Check ($rule.Enabled -eq 'True') "ファイアウォール規則 (プロファイル: $($rule.Profile) / 接続元: $addr)"
+    } else {
+        Write-Check $false "ファイアウォール規則 $RuleName がありません ('jfs.cmd firewall' で作り直せます)"
+    }
+    Show-LogTail $LogPath 10
+}
+
+function Invoke-Doctor($Config, [string]$UserName) {
+    Write-Host '== サーバー全体 ==' -ForegroundColor White
+    $py = Find-BasePython $Config
+    Write-Check ([bool]$py) "Python: $py"
+    Write-Check ([bool](Get-LocalGroup -Name $script:LocalGroup -ErrorAction SilentlyContinue)) "グループ $script:LocalGroup"
+
+    $profiles = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue)
+    foreach ($n in $profiles) {
+        Write-Check ($n.NetworkCategory -ne 'Public') ("ネットワーク '$($n.Name)' ($($n.InterfaceAlias)): $($n.NetworkCategory)" +
+            $(if ($n.NetworkCategory -eq 'Public') { " → パブリックでは他の PC から接続できません。Set-NetConnectionProfile -InterfaceIndex $($n.InterfaceIndex) -NetworkCategory Private" } else { '' }))
+    }
+    $fw = @(Get-NetFirewallProfile -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -and $_.AllowInboundRules -eq 'False' })
+    foreach ($f in $fw) { Write-Check $false "ファイアウォールのプロファイル $($f.Name) で受信規則が無効化されています (グループ ポリシーなど)" }
+
+    # 過去に「アクセスを許可しない」を選ぶと、python.exe をブロックする規則ができ、ポートの許可より優先される
+    $blocks = @(Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue | Where-Object { $_.Program -match 'python' } |
+        ForEach-Object { Get-NetFirewallRule -AssociatedNetFirewallApplicationFilter $_ -ErrorAction SilentlyContinue } |
+        Where-Object { $_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Block' })
+    if ($blocks.Count -gt 0) {
+        foreach ($b in $blocks) { Write-Check $false "python をブロックする受信規則があります: '$($b.DisplayName)' (wf.msc で無効化または削除してください)" }
+    } else {
+        Write-Check $true 'python をブロックするファイアウォール規則はありません'
+    }
+
+    foreach ($u in (Get-TargetUsers $Config $UserName)) {
+        Test-ServiceTarget "ユーザー '$($u.name)'" (Get-TaskName $u) (Get-AccountName $u) ([int]$u.port) `
+            "jupyter-for-share-$($u.name)" '/api' (Get-InstancePaths $u).Log
+    }
+    if (-not $UserName -and [bool](Get-Value $Config.monitor 'enabled' $false)) {
+        Test-ServiceTarget 'リソースモニター' 'jfs-monitor' $script:MonitorAccount ([int]$Config.monitor.port) `
+            'jupyter-for-share-_monitor' '/api/stats' (Get-MonitorPaths).Log
+    }
+    Write-Host ''
+    Write-Host '[OK] がすべて付いているのに別の PC からつながらない場合は、接続元の PC が同じサブネットにあるか、'
+    Write-Host 'IP アドレスの URL (jfs.cmd url) で試してください。'
+}
+
 # ---- メイン ----
 
 if ($script:Commands -notcontains $Command.ToLowerInvariant()) {
@@ -814,17 +972,20 @@ try {
 
         'list' {
             $cfg = Read-Config
-            $rows = @(foreach ($s in @($cfg.users)) {
-                [pscustomobject]@{
-                    User   = $s.name
-                    Port   = $s.port
-                    Status = Get-TaskStatus (Get-TaskName $s) ([int]$s.port)
-                    Folder = $s.path
+            $users = @($cfg.users)
+            if ($users.Count -gt 0) {
+                Write-Host ('{0,-18}{1,-8}{2}' -f 'ユーザー', 'ポート', '状態')
+                foreach ($s in $users) {
+                    Write-Host ('{0,-18}{1,-8}{2}' -f $s.name, $s.port, (Get-TaskStatus (Get-TaskName $s) ([int]$s.port)))
                 }
-            })
-            if ($rows.Count -gt 0) { $rows | Format-Table -AutoSize | Out-Host }
-            else { Write-Info "ユーザー環境はまだありません。'jfs.cmd add <ユーザー名>' で作成してください。" }
-            Write-Host "リソースモニター: ポート $($cfg.monitor.port) / $(Get-TaskStatus 'jfs-monitor' ([int]$cfg.monitor.port))"
+                Write-Host "(フォルダ: $(Get-InstancesRoot $cfg)\<ユーザー名>)"
+                Write-Host ''
+            } else { Write-Info "ユーザー環境はまだありません。'jfs.cmd add <ユーザー名>' で作成してください。" }
+            if (Get-JfsTask 'jfs-monitor') {
+                Write-Host "リソースモニター: ポート $($cfg.monitor.port) / $(Get-TaskStatus 'jfs-monitor' ([int]$cfg.monitor.port))"
+            } else {
+                Write-Host "リソースモニター: 未設置 ('jfs.cmd monitor' で設置)"
+            }
             if ((Get-ProtectJobState) -eq 'running') { Write-Host "アクセス禁止の設定: バックグラウンドで実行中 ('jfs.cmd protect -Status' で確認)" }
         }
 
@@ -832,28 +993,54 @@ try {
             if (-not $Name) { throw 'ユーザー名を指定してください。例: jfs.cmd add alice' }
             $userName = ConvertTo-UserName $Name
             $cfg = Read-Config
-            if (Find-UserEnv $cfg $userName) { throw "ユーザー '$userName' は既に存在します。" }
+            if (Find-UserEnv $cfg $userName) { throw "ユーザー '$userName' は既に存在します ('jfs.cmd list' で確認)。" }
             Get-BasePythonOrThrow $cfg | Out-Null
 
             Initialize-LocalGroup
             $root = Initialize-InstancesRoot $cfg
             $folder = Join-Path $root $userName
-            if (Test-Path -LiteralPath $folder) { throw "フォルダ $folder が既に存在します。別の名前にするか、フォルダを移動してください。" }
             if ($folder -match "[%`"',]") { throw "フォルダのパスに使えない文字 (% `" ' ,) が含まれています: $folder" }
+            if ((Test-Path -LiteralPath $folder) -or (Get-LocalUser -Name "$($script:UserPrefix)$userName" -ErrorAction SilentlyContinue)) {
+                throw ("以前の作成途中のデータ (フォルダ $folder またはアカウント $($script:UserPrefix)$userName) が残っています。" +
+                       "'jfs.cmd remove $userName -DeleteFiles' で片付けてから、もう一度作成してください。")
+            }
 
             $u = [pscustomobject]@{ name = $userName; port = (Get-RandomPort $cfg); path = $folder; token = (New-Token) }
-            $sid = New-ServiceAccount (Get-AccountName $u) "jupyter-for-share: $userName"
-            Initialize-InstanceFolders $u $sid
-            Install-JupyterLab $cfg $u
-            Install-UserVenv $cfg $u
-            Write-ServerFiles $cfg $u
+            try {
+                Write-Info "[1/6] 実行用アカウント $(Get-AccountName $u) を作成"
+                $sid = New-ServiceAccount (Get-AccountName $u) "jupyter-for-share: $userName"
+                Write-Info "[2/6] フォルダとアクセス権を設定: $folder"
+                Initialize-InstanceFolders $u $sid
+                Write-Info '[3/6] JupyterLab をインストール'
+                Install-JupyterLab $cfg $u
+                Write-Info '[4/6] venv を作成'
+                Install-UserVenv $cfg $u
+                Write-ServerFiles $cfg $u
 
-            $cfg.users = @($cfg.users) + $u
-            Save-Config $cfg
-            Sync-FirewallRules $cfg
-            Register-UserTask $u
-            Start-UserEnv $u
+                Write-Info "[5/6] 設定ファイル・ファイアウォール・自動起動を登録 (ポート $($u.port))"
+                $cfg.users = @($cfg.users) + $u
+                Save-Config $cfg
+                Sync-FirewallRules $cfg
+                Register-UserTask $u
+            } catch {
+                $err = $_.Exception.Message
+                Write-Warn "作成に失敗したため、途中まで作ったものを片付けます: $err"
+                try {
+                    Remove-UserLeftovers $userName $folder
+                    $cfg = Read-Config
+                    $cfg.users = @($cfg.users | Where-Object { $_.name -ne $userName })
+                    Save-Config $cfg
+                    Sync-FirewallRules $cfg
+                } catch {
+                    Write-Warn "片付けの一部に失敗しました ($($_.Exception.Message))。'jfs.cmd remove $userName -DeleteFiles' で片付けてください。"
+                }
+                throw "ユーザー '$userName' の作成に失敗しました: $err"
+            }
+
+            Write-Info '[6/6] 起動'
+            $ok = Start-UserEnv $u
             Show-UserUrls $cfg $u
+            if (-not $ok) { Write-Warn '環境は作成されましたが、まだ起動していません。上の内容を確認してください。' }
         }
 
         'set' {
@@ -872,37 +1059,39 @@ try {
             Sync-FirewallRules $cfg
             Register-UserTask $u
             Stop-UserEnv $u
-            Start-UserEnv $u
+            Start-UserEnv $u | Out-Null
             Show-UserUrls $cfg $u
         }
 
         'remove' {
+            if (-not $Name) { throw 'ユーザー名を指定してください。' }
+            $userName = ConvertTo-UserName $Name
             $cfg = Read-Config
-            $u = Get-RequiredUser $cfg $Name
+            $u = Find-UserEnv $cfg $userName
+            $folder = if ($u) { [string]$u.path } else { Join-Path (Get-InstancesRoot $cfg) $userName }
+            $leftover = (Test-Path -LiteralPath $folder) -or (Get-LocalUser -Name "$($script:UserPrefix)$userName" -ErrorAction SilentlyContinue) -or
+                        (Get-JfsTask "jfs-$userName")
+            if (-not $u -and -not $leftover) { throw "ユーザー '$userName' は登録されていません。'jfs.cmd list' で確認してください。" }
             if (-not $Force) {
-                $msg = "ユーザー '$($u.name)' の環境を削除します。"
-                if ($DeleteFiles) { $msg += "フォルダ $($u.path) も中身ごと削除されます。" }
-                else { $msg += "フォルダ $($u.path) は残ります。" }
+                $msg = "ユーザー '$userName' の環境を削除します。"
+                if ($DeleteFiles) { $msg += "フォルダ $folder も中身ごと削除されます。" }
+                else { $msg += "フォルダ $folder は残ります。" }
                 $ans = Read-Host "$msg よろしいですか? [y/N]"
                 if ($ans -notmatch '^[yY]') { Write-Info '中止しました。'; break }
             }
-            Stop-UserEnv $u
-            $task = Get-JfsTask (Get-TaskName $u)
-            if ($task) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }
-            $cfg.users = @($cfg.users | Where-Object { $_.name -ne $u.name })
-            Save-Config $cfg
-            Sync-FirewallRules $cfg
-            Remove-ServiceAccount (Get-AccountName $u)
-            if ($DeleteFiles -and (Test-Path -LiteralPath $u.path)) {
-                Remove-Item -LiteralPath $u.path -Recurse -Force
-                Write-Ok "フォルダを削除しました: $($u.path)"
+            if ($u) {
+                $cfg.users = @($cfg.users | Where-Object { $_.name -ne $userName })
+                Save-Config $cfg
             }
-            Write-Ok "ユーザー '$($u.name)' の環境を削除しました。"
+            Sync-FirewallRules $cfg
+            if ($DeleteFiles) { Remove-UserLeftovers $userName $folder }
+            else { Remove-UserLeftovers $userName '' }
+            Write-Ok "ユーザー '$userName' の環境を削除しました。"
         }
 
         'start' {
             $cfg = Read-Config
-            foreach ($u in (Get-TargetUsers $cfg $Name)) { Start-UserEnv $u }
+            foreach ($u in (Get-TargetUsers $cfg $Name)) { Start-UserEnv $u | Out-Null }
         }
 
         'stop' {
@@ -912,7 +1101,7 @@ try {
 
         'restart' {
             $cfg = Read-Config
-            foreach ($u in (Get-TargetUsers $cfg $Name)) { Stop-UserEnv $u; Start-UserEnv $u }
+            foreach ($u in (Get-TargetUsers $cfg $Name)) { Stop-UserEnv $u; Start-UserEnv $u | Out-Null }
         }
 
         'url' {
@@ -929,7 +1118,7 @@ try {
                 Save-Config $cfg
                 Write-ServerFiles $cfg $u
                 Stop-UserEnv $u
-                Start-UserEnv $u
+                Start-UserEnv $u | Out-Null
                 Write-Ok '新しいトークンを発行しました。古い URL は使えなくなります。'
             }
             Show-UserUrls $cfg $u
@@ -950,7 +1139,7 @@ try {
                 $wasRunning = (Get-TaskStatus (Get-TaskName $u) ([int]$u.port)) -eq '起動中'
                 Stop-UserEnv $u
                 Install-JupyterLab $cfg $u -Upgrade
-                if ($wasRunning) { Start-UserEnv $u }
+                if ($wasRunning) { Start-UserEnv $u | Out-Null }
             }
         }
 
@@ -967,7 +1156,7 @@ try {
             $sid = New-ServiceAccount (Get-AccountName $u) "jupyter-for-share: $($u.name)"
             Initialize-InstanceFolders $u $sid
             Install-UserVenv $cfg $u
-            Start-UserEnv $u
+            Start-UserEnv $u | Out-Null
         }
 
         'monitor' {
@@ -985,7 +1174,7 @@ try {
             Stop-JfsTask 'jfs-monitor' $script:MonitorAccount 'リソースモニター'
             Install-Monitor $cfg
             Sync-FirewallRules $cfg
-            Start-JfsTask 'jfs-monitor' ([int]$cfg.monitor.port) 'リソースモニター' 'monitor'
+            Start-JfsTask 'jfs-monitor' ([int]$cfg.monitor.port) 'リソースモニター' (Get-MonitorPaths).Log | Out-Null
             foreach ($u in @($cfg.users)) { Write-UserReadme $cfg $u }
             Show-MonitorUrls $cfg
         }
@@ -1001,6 +1190,10 @@ try {
 
         'firewall' {
             Sync-FirewallRules (Read-Config)
+        }
+
+        'doctor' {
+            Invoke-Doctor (Read-Config) $Name
         }
 
         'protect' {
