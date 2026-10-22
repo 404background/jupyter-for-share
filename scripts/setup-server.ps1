@@ -47,7 +47,7 @@ function Install-WithWinget([string]$Id, [string[]]$ExtraArgs = @()) {
 
 function Invoke-Setup {
     Write-Host ''
-    Write-Host '=== jupyter-for-share サーバーセットアップ ===' -ForegroundColor White
+    Write-Host "=== jupyter-for-share サーバーセットアップ (バージョン $(Get-JfsVersion)) ===" -ForegroundColor White
 
     # ---- 設定ファイル ----
     $cfg = Read-Config

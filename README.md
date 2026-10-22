@@ -115,6 +115,8 @@ jfs.cmd start
 | `jfs.cmd token <ユーザー名> -New` | アクセストークン (パスワード代わり) を再発行 |
 | `jfs.cmd set <ユーザー名> -Port 23456` | ポートを固定の番号に変更 (`-AllowFrom` で接続を許可する相手も変更可) |
 | `jfs.cmd logs <ユーザー名> [-Follow]` | 実行コマンドの記録とサーバーのログを表示 (`jfs.cmd logs monitor` でリソースモニターのログ) |
+| `jfs.cmd version` | バージョン (git のコミット) を表示 |
+| `uninstall.cmd` | Windows に加えた変更をすべて元に戻す (後述の「アンインストール」) |
 | `jfs.cmd refresh` | 全ユーザーの起動用ファイルなどを作り直す (更新時に setup.cmd から自動で実行) |
 | `jfs.cmd upgrade [ユーザー名]` | JupyterLab 本体を更新 |
 | `jfs.cmd reset-venv <ユーザー名>` | venv を作り直す (入れたパッケージを初期化) |
@@ -317,6 +319,22 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 | `defaults.protectedPaths` | `["auto"]` | アクセスを禁止するフォルダ |
 | `monitor.port` | `8000` | リソースモニターのポート (`jfs.cmd monitor -Port` で変更) |
 
+## アンインストール
+
+`uninstall.cmd` を実行すると (管理者権限の確認が出ます)、jupyter-for-share が Windows に加えた変更を**記録に頼らず探して**すべて元に戻します。
+以前のバージョンが変更したまま残っているもの (ドライブ直下などに付けたアクセス禁止など) もまとめて片付けます。
+
+1. サーバー・リソースモニターの停止 (実行用アカウントのプロセスや、このフォルダから動いているプログラムを終了)
+2. 自動起動タスク (`\jupyter-for-share\`) とファイアウォール規則の削除
+3. アクセス禁止 (拒否) の解除 (全ドライブの直下・その中、このフォルダの上の階層、`C:\Users\Public` を確認)
+4. 実行用アカウント (`jfs-*`, `jfsmon`) とグループ、ログオン権限の削除
+5. このフォルダのアクセス権を元に戻す (所有者を Administrators にし、親フォルダからの継承に戻す)
+6. 実行時のファイルの削除 (`servers.json` は `servers.json.uninstalled` として残す)
+7. ユーザーのフォルダ (`user\`) は残します。`uninstall.cmd -DeleteFiles` で削除します
+
+完了後、このウィンドウと、このフォルダを開いているエクスプローラーやコマンドプロンプトを閉じれば、フォルダを削除できます。
+もう一度使う場合は `setup.cmd` を実行してください (きれいな状態からセットアップし直せます)。
+
 ## ライセンス
 
 このリポジトリのスクリプト・ドキュメントは [MIT License](LICENSE) で公開しています。
@@ -355,5 +373,8 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 - **ターミナルでスクリプト (Activate.ps1 など) が実行できない**: 実行ポリシーは RemoteSigned に設定済みです。
   インターネットから取得したスクリプトはブロックされることがあるので `Unblock-File` を使ってください
 - **アクセス禁止の設定が終わったか知りたい**: `jfs.cmd protect -Status` で、実行中かどうか・設定済みの場所・ログの末尾が表示されます
-- **全部やり直したい**: `jfs.cmd remove <ユーザー名>` で各環境を削除し、`jfs.cmd monitor-stop`、`jfs.cmd unprotect` を実行します。
-  アカウント `jfsmon` とグループ `jupyter-for-share-users` は「コンピューターの管理」から削除できます
+- **フォルダを削除できない / 以前の設定が残っていないか心配 / 全部やり直したい**: 「アンインストール」の節を参照してください
+- **使っているバージョンを確認したい**: `jfs.cmd version`。`setup.cmd` は最初に `git pull` で更新しますが、
+  失敗した場合は古いままになります (失敗したときは画面にメッセージを表示して止まります)
+- **起動時に PermissionError が出る**: `jfs.cmd doctor <ユーザー名>` を実行すると、そのユーザーの実行用アカウントとして
+  ドライブ直下から作業フォルダまでの各場所を読めるかをテストし、読めない場所 (NG) とそのアクセス権を表示します

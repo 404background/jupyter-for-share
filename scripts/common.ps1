@@ -55,7 +55,8 @@ function Invoke-Native {
     param(
         [Parameter(Mandatory = $true, Position = 0)][string]$FilePath,
         [Parameter(Position = 1)][string[]]$Arguments = @(),
-        [switch]$Quiet
+        [switch]$Quiet,
+        [switch]$IgnoreExitCode   # 失敗しても例外にしない (一部のファイルで失敗しても続ける場合)
     )
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -68,7 +69,7 @@ function Invoke-Native {
     if ($code -ne 0 -or -not $Quiet) {
         $out | ForEach-Object { Write-Host "    $_" }
     }
-    if ($code -ne 0) {
+    if ($code -ne 0 -and -not $IgnoreExitCode) {
         throw "$(Split-Path -Leaf $FilePath) が失敗しました (exit code $code)。"
     }
 }
@@ -190,16 +191,16 @@ function Get-CurrentUserSid {
     return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 }
 
-function Add-AccountRight([string]$Sid, [string]$Right) {
+function Add-AccountRight([string]$Sid, [string]$Right, [switch]$LoadOnly) {
     # setup-server.ps1 から jfs.ps1 を同じプロセスで呼ぶため、型が既に読み込まれていれば再定義しない
-    if (-not ('JfsLsa' -as [type])) {
+    if (-not ('JfsLsa2' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 
-public static class JfsLsa {
+public static class JfsLsa2 {
     [StructLayout(LayoutKind.Sequential)]
     struct LSA_UNICODE_STRING { public ushort Length; public ushort MaximumLength; public IntPtr Buffer; }
 
@@ -213,6 +214,8 @@ public static class JfsLsa {
     static extern uint LsaOpenPolicy(IntPtr systemName, ref LSA_OBJECT_ATTRIBUTES attrs, uint access, out IntPtr handle);
     [DllImport("advapi32.dll")]
     static extern uint LsaAddAccountRights(IntPtr handle, byte[] sid, LSA_UNICODE_STRING[] rights, uint count);
+    [DllImport("advapi32.dll")]
+    static extern uint LsaRemoveAccountRights(IntPtr handle, byte[] sid, bool allRights, LSA_UNICODE_STRING[] rights, uint count);
     [DllImport("advapi32.dll")]
     static extern uint LsaClose(IntPtr handle);
     [DllImport("advapi32.dll")]
@@ -243,10 +246,49 @@ public static class JfsLsa {
             LsaClose(handle);
         }
     }
+
+    // アカウント (グループ) に割り当てたすべての権利を外す (アンインストール用)
+    public static void RemoveAllRights(string sidString) {
+        SecurityIdentifier sid = new SecurityIdentifier(sidString);
+        byte[] sidBytes = new byte[sid.BinaryLength];
+        sid.GetBinaryForm(sidBytes, 0);
+        LSA_OBJECT_ATTRIBUTES attrs = new LSA_OBJECT_ATTRIBUTES();
+        attrs.Length = Marshal.SizeOf(typeof(LSA_OBJECT_ATTRIBUTES));
+        IntPtr handle;
+        uint status = LsaOpenPolicy(IntPtr.Zero, ref attrs, 0x00000811, out handle);
+        if (status != 0) throw new Win32Exception(LsaNtStatusToWinError(status));
+        try {
+            status = LsaRemoveAccountRights(handle, sidBytes, true, null, 0);
+            // STATUS_OBJECT_NAME_NOT_FOUND (権利が何もない) は問題なし
+            if (status != 0 && status != 0xC0000034) throw new Win32Exception(LsaNtStatusToWinError(status));
+        } finally {
+            LsaClose(handle);
+        }
+    }
 }
 '@
     }
-    [JfsLsa]::AddRight($Sid, $Right)
+    if (-not $LoadOnly) { [JfsLsa2]::AddRight($Sid, $Right) }
+}
+
+function Remove-AllAccountRights([string]$Sid) {
+    Add-AccountRight -LoadOnly
+    [JfsLsa2]::RemoveAllRights($Sid)
+}
+
+# jupyter-for-share のバージョン (git のコミット)。setup で git pull に失敗して古いままになっていないかの確認用
+function Get-JfsVersion {
+    $git = (Get-Command git -ErrorAction SilentlyContinue).Source
+    if (-not $git) { $git = Join-Path $env:ProgramFiles 'Git\cmd\git.exe' }
+    if (Test-Path -LiteralPath $git) {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $v = & $git -c safe.directory=* -C $script:RepoRoot log -1 '--format=%h %cd' '--date=format:%Y-%m-%d %H:%M' 2>$null
+            if ($LASTEXITCODE -eq 0 -and $v) { return [string]$v }
+        } finally { $ErrorActionPreference = $prev }
+    }
+    return '不明 (git の情報を取得できません)'
 }
 
 # サーバー用ユーザーをまとめるグループを作り、ログオン権限を設定する

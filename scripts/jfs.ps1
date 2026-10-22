@@ -34,7 +34,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
 $script:Commands = @('help', 'list', 'add', 'doctor', 'network', 'set', 'remove', 'start', 'stop', 'restart',
-                     'hub', 'refresh', 'autostart',
+                     'hub', 'refresh', 'autostart', 'uninstall', 'version',
                      'url', 'token', 'logs', 'upgrade', 'reset-venv', 'firewall', 'protect', 'unprotect',
                      'monitor', 'monitor-stop')
 
@@ -51,12 +51,14 @@ $script:CommandHelp = @{
     'token'        = "jfs.cmd token <ユーザー名> [-New]`n  接続用 URL を表示します。-New でトークンを再発行します (古い URL は使えなくなります)。"
     'logs'         = "jfs.cmd logs <ユーザー名|monitor> [-Follow]`n  サーバーのログと、利用者が実行したコマンドの記録 (user\<ユーザー名>\.logs) の末尾を表示します。`n  -Follow でサーバーのログの追記を表示し続けます (Ctrl+C で終了)。"
     'autostart'    = "jfs.cmd autostart on|off`n  on: この管理者が Windows にサインインしたとき、全ユーザーのサーバー (サーバー管理ウィンドウ) を自動で開く`n  off: 自動で開かない"
+    'uninstall'    = "jfs.cmd uninstall [-DeleteFiles] [-Force]`n  jupyter-for-share が Windows に加えた変更をすべて元に戻します (uninstall.cmd と同じ)。`n  サーバーとリソースモニターの停止、自動起動タスク・ファイアウォール規則・実行用アカウント・グループの削除、`n  アクセス禁止 (拒否) の解除 (記録がないものも全ドライブから探す)、このフォルダのアクセス権を元に戻す。`n  ユーザーのフォルダ (user\<名前>\work など) は残します。-DeleteFiles で user フォルダも削除します。`n  実行後は、このフォルダを普通に削除できます。"
+    'version'      = "jfs.cmd version`n  jupyter-for-share のバージョン (git のコミット) を表示します。"
     'refresh'      = "jfs.cmd refresh`n  全ユーザーの起動用ファイル・設定・起動用タスクを作り直します (更新後に setup.cmd から自動で実行されます)。"
     'upgrade'      = "jfs.cmd upgrade [ユーザー名]`n  JupyterLab 本体を最新版に更新します。省略で全員分。venv に入れたパッケージはそのまま。"
     'reset-venv'   = "jfs.cmd reset-venv <ユーザー名> [-Force]`n  venv を作り直します (pip で入れたパッケージは消えます。work フォルダのファイルは残ります)。"
     'monitor'      = "jfs.cmd monitor [-Port 番号] [-AllowFrom 範囲]`n  リソースモニター (CPU / メモリ / GPU) を設置・更新して起動します。既定のポートは 8000。"
     'monitor-stop' = "jfs.cmd monitor-stop`n  リソースモニターを停止します (再開は jfs.cmd monitor)。"
-    'doctor'       = "jfs.cmd doctor [ユーザー名]`n  つながらないときの診断です。アカウント・自動起動タスク・待ち受けポート・HTTP 応答・`n  ファイアウォール・ネットワークの種類・ログを確認し、問題のある箇所に [NG] を表示します。"
+    'doctor'       = "jfs.cmd doctor [ユーザー名]`n  ユーザー名を付けると、そのユーザーの実行用アカウントとして各フォルダを読めるかのテストも行います。`n  つながらないときの診断です。アカウント・自動起動タスク・待ち受けポート・HTTP 応答・`n  ファイアウォール・ネットワークの種類・ログを確認し、問題のある箇所に [NG] を表示します。"
     'network'      = "jfs.cmd network [-SetPrivate] [-Yes]`n  他の PC から接続できないとき用。ネットワークとファイアウォールの現状を確認して表示し、`n  必要な変更 (ポートの許可・ping の許可・名前解決の許可・python をブロックする規則の無効化) を`n  一覧にしてから、確認のうえ適用します。適用後にもう一度状態を表示します。`n  -SetPrivate: 「パブリック」の LAN 接続を「プライベート」に変更する`n  -Yes: 確認せずに適用する"
     'firewall'     = "jfs.cmd firewall`n  Windows ファイアウォール規則を設定ファイル (servers.json) に合わせて作り直します。"
     'protect'      = "jfs.cmd protect [-Background] [-Force]`njfs.cmd protect -Status`n  サーバー実行用アカウントから他のフォルダへのアクセスを禁止します。設定済みの場所は飛ばします。`n  -Background: 裏で実行 / -Force: 設定済みの場所も付け直す / -Status: 進み具合を表示"
@@ -100,6 +102,9 @@ jupyter-for-share 管理コマンド
   jfs.cmd firewall                      ファイアウォール規則を更新
   jfs.cmd protect [-Background]         他のフォルダへのアクセスを禁止 (-Status で進み具合)
   jfs.cmd unprotect                     アクセス禁止を解除
+
+  jfs.cmd uninstall                     Windows に加えた変更をすべて元に戻す (uninstall.cmd と同じ)
+  jfs.cmd version                       バージョンを表示
 
 ヘルプ
   jfs.cmd help <コマンド>               コマンドごとの詳しい説明 (例: jfs.cmd help add)
@@ -866,7 +871,7 @@ function Invoke-Hub {
 
     $oldTitle = $Host.UI.RawUI.WindowTitle
     $Host.UI.RawUI.WindowTitle = 'jupyter-for-share サーバー - 閉じると全員のサーバーが停止します'
-    Write-Host 'jupyter-for-share サーバー管理ウィンドウ' -ForegroundColor White
+    Write-Host "jupyter-for-share サーバー管理ウィンドウ (バージョン $(Get-JfsVersion))" -ForegroundColor White
     Write-Host 'このウィンドウを閉じる (または Ctrl+C) と、全ユーザーのサーバーが停止します。' -ForegroundColor Yellow
     Write-Host "1 人だけ止める: jfs.cmd stop <ユーザー名> / 起動する: jfs.cmd start <ユーザー名>"
     Write-Host ('-' * 70)
@@ -1380,6 +1385,145 @@ function Remove-UserLeftovers([string]$UserName, [string]$Folder) {
     }
 }
 
+# ---- アンインストール (jfs.cmd uninstall / uninstall.cmd) ----
+# 記録に頼らず、jupyter-for-share が作ったもの・変えたものを探して元に戻す。
+
+# 拒否 (Deny) のアクセス権を探す場所: 全固定ドライブの直下とその中、リポジトリの上の階層の中、C:\Users\Public、記録済みの場所
+function Find-JfsDenies($Config, [string]$GroupSid) {
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($disk in @(Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=3')) {
+        $root = "$($disk.DeviceID)\"
+        $candidates.Add($root)
+        foreach ($c in @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue)) { $candidates.Add($c.FullName) }
+    }
+    $dir = Split-Path -Parent $script:RepoRoot.TrimEnd('\')
+    while ($dir) {
+        foreach ($c in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) { $candidates.Add($c.FullName) }
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    if ($env:PUBLIC) { $candidates.Add($env:PUBLIC) }
+    foreach ($a in @(Get-ProtectedApplied $Config)) { $candidates.Add($a) }
+
+    $found = @()
+    foreach ($path in @($candidates | Select-Object -Unique)) {
+        try { $acl = Get-Acl -LiteralPath $path } catch { continue }
+        foreach ($r in $acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])) {
+            if ($r.AccessControlType -ne 'Deny') { continue }
+            $sid = $r.IdentityReference.Value
+            $mine = $GroupSid -and $sid -eq $GroupSid
+            if (-not $mine) {
+                # 以前に作って消したグループなど、名前に変換できない (存在しない) アカウントへの拒否も片付ける
+                try { [void]$r.IdentityReference.Translate([System.Security.Principal.NTAccount]) } catch { $mine = $true }
+            }
+            if ($mine) { $found += [pscustomobject]@{ Path = $path; Sid = $sid } }
+        }
+    }
+    return $found
+}
+
+function Invoke-Uninstall($Config, [switch]$DeleteFiles) {
+    $repo = $script:RepoRoot
+    Write-Host '== jupyter-for-share のアンインストール ==' -ForegroundColor White
+    Write-Host "対象: $repo"
+
+    # 1. サーバー管理ウィンドウ・タスク・プロセスを止める
+    Write-Info '[1/7] サーバーとリソースモニターを停止しています...'
+    try { Save-Wanted $false @() @() } catch { }
+    $hub = Get-HubProcess
+    if ($hub) { $hub | Stop-Process -Force -ErrorAction SilentlyContinue }
+    $tasks = @(Get-ScheduledTask -TaskPath $script:TaskPath -ErrorAction SilentlyContinue)
+    foreach ($t in $tasks) {
+        Stop-ScheduledTask -InputObject $t -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -InputObject $t -Confirm:$false -ErrorAction SilentlyContinue
+        Write-Ok "タスクを削除: $($t.TaskPath)$($t.TaskName)"
+    }
+    try {   # 空になったタスクのフォルダも消す
+        $svc = New-Object -ComObject 'Schedule.Service'; $svc.Connect()
+        $svc.GetFolder('\').DeleteFolder($script:TaskPath.Trim('\'), 0)
+    } catch { }
+    $accounts = @(Get-LocalUser -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -like "$($script:UserPrefix)*" -or $_.Name -eq $script:MonitorAccount })
+    $names = @($accounts | ForEach-Object { "$env:COMPUTERNAME\$($_.Name)" })
+    $procs = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {
+        ($names -contains $_.UserName) -or ($_.Path -and $_.Path.StartsWith("$repo\", [StringComparison]::OrdinalIgnoreCase)) })
+    if ($procs.Count -gt 0) {
+        $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+        $procs | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
+        Write-Ok "プロセスを停止: $($procs.Count) 個"
+    }
+
+    # 2. ファイアウォール規則
+    Write-Info '[2/7] ファイアウォール規則を削除しています...'
+    foreach ($g in @($script:FirewallGroup, $script:NetworkRuleGroup)) {
+        $rules = @(Get-NetFirewallRule -Group $g -ErrorAction SilentlyContinue)
+        if ($rules.Count -gt 0) { $rules | Remove-NetFirewallRule; Write-Ok "規則を削除: $g ($($rules.Count) 件)" }
+    }
+
+    # 3. アクセス禁止 (拒否) を外す
+    Write-Info '[3/7] アクセス禁止 (拒否) を探しています (全ドライブの直下を確認します)...'
+    $group = Get-LocalGroup -Name $script:LocalGroup -ErrorAction SilentlyContinue
+    $groupSid = if ($group) { $group.SID.Value } else { '' }
+    $denies = @(Find-JfsDenies $Config $groupSid)
+    if ($denies.Count -gt 0) {
+        Write-Info "拒否が付いている場所: $(@($denies | ForEach-Object { $_.Path } | Select-Object -Unique) -join ', ')"
+        Write-Info '外しています (ドライブ全体に付いている場合、ファイル数が多いと時間がかかります)...'
+        foreach ($sid in @($denies | ForEach-Object { $_.Sid } | Select-Object -Unique)) {
+            $targets = @($denies | Where-Object { $_.Sid -eq $sid } | ForEach-Object { $_.Path } | Select-Object -Unique)
+            Invoke-IcaclsParallel $targets @('/remove:d', "*$sid", '/Q', '/C')
+        }
+        Write-Ok '拒否を外しました。'
+    } else {
+        Write-Ok '拒否は見つかりませんでした。'
+    }
+    Remove-Item -LiteralPath (Get-ProtectStatePaths).Applied -ErrorAction SilentlyContinue
+
+    # 4. アカウントとグループ
+    Write-Info '[4/7] 実行用アカウントとグループを削除しています...'
+    foreach ($a in $accounts) { Remove-ServiceAccount $a.Name }
+    if ($group) {
+        try { Remove-AllAccountRights $groupSid } catch { Write-Warn "ログオン権限の削除に失敗しました: $($_.Exception.Message)" }
+        Remove-LocalGroup -Name $script:LocalGroup
+        Write-Ok "グループ '$script:LocalGroup' を削除しました。"
+    }
+
+    # 5. このフォルダのアクセス権を元に戻す (所有者を Administrators にし、親フォルダからの継承に戻す)
+    Write-Info "[5/7] $repo のアクセス権を元に戻しています..."
+    Invoke-Native 'icacls.exe' @($repo, '/setowner', "*$($script:SidAdmins)", '/T', '/C', '/Q') -Quiet -IgnoreExitCode
+    Invoke-Native 'icacls.exe' @($repo, '/reset', '/T', '/C', '/Q') -Quiet -IgnoreExitCode
+    Get-ChildItem -LiteralPath $repo -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq '.server' } | ForEach-Object { $_.Attributes = 'Directory' }
+    $pdj = Join-Path $env:ProgramData 'jupyter'
+    if (Test-Path -LiteralPath $pdj) { Invoke-Native 'icacls.exe' @($pdj, '/reset', '/T', '/C', '/Q') -Quiet -IgnoreExitCode }
+    Write-Ok 'アクセス権を元に戻しました。'
+
+    # 6. 実行時のファイル
+    Write-Info '[6/7] 実行時のファイルを削除しています...'
+    foreach ($d in @((Join-Path $repo '.runtime'), (Join-Path $repo 'monitor\.runtime'), (Join-Path $repo 'monitor\.venv'))) {
+        if (Test-Path -LiteralPath $d) { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    if (Test-Path -LiteralPath $script:ConfigPath) {
+        Move-Item -LiteralPath $script:ConfigPath -Destination "$($script:ConfigPath).uninstalled" -Force
+        Write-Ok "設定ファイルは $($script:ConfigPath).uninstalled に残しました (トークンを含みます)。"
+    }
+
+    # 7. ユーザーのフォルダ
+    $userRoot = Get-InstancesRoot $Config
+    if ($DeleteFiles -and (Test-Path -LiteralPath $userRoot)) {
+        Write-Info "[7/7] ユーザーのフォルダを削除しています: $userRoot"
+        Remove-Item -LiteralPath $userRoot -Recurse -Force
+        Write-Ok '削除しました。'
+    } elseif (Test-Path -LiteralPath $userRoot) {
+        Write-Info "[7/7] ユーザーのフォルダは残しました: $userRoot (ノートブックなど。不要なら削除してください)"
+    }
+
+    Write-Host ''
+    Write-Ok 'アンインストールが完了しました。'
+    Write-Host "このウィンドウ (と、$repo を開いているエクスプローラーやコマンドプロンプト) を閉じれば、フォルダを削除できます。"
+    Write-Host 'もう一度使う場合は、setup.cmd を実行してください。'
+}
+
 # ---- 他の PC から接続できるようにする (jfs.cmd network) ----
 # 現状を確認 → 必要な変更を一覧表示 → 確認 → 適用 → 再確認 の順に行う。
 # ping と名前解決の規則は、ポートの規則 (Sync-FirewallRules で作り直す) とは別のグループにする。
@@ -1638,8 +1782,90 @@ function Test-ServiceTarget([string]$Label, [string]$TaskName, [string]$Account,
     }
 }
 
+# サーバー実行用アカウントの権限で Python を一度だけ動かし、必要な場所にアクセスできるか確かめる
+function Test-AccessAsUser($Config, $UserEnv) {
+    $p = Get-InstancePaths $UserEnv
+    $py = Join-Path $p.LabVenv 'Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $py)) { Write-Check $false "JupyterLab の Python がありません: $py"; return }
+    foreach ($d in @($p.Tmp, $p.Logs)) { if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null } }
+
+    # 調べる場所: ドライブ直下から作業フォルダまでの各階層と、起動に必要なファイル
+    $paths = @()
+    $dir = $p.Work
+    while ($dir) {
+        $paths = @($dir) + $paths
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    $paths += @($p.Venv, (Join-Path $p.Venv 'Scripts\python.exe'), $py, $p.Config, $p.Home, $p.Runtime, $p.Tmp, $p.Logs)
+    $base = Find-BasePython $Config
+    if ($base) { $paths += @((Split-Path -Parent $base), $base) }
+
+    $out = Join-Path $p.Logs 'access-test.txt'
+    $pyFile = Join-Path $p.Tmp 'access-test.py'
+    $cmdFile = Join-Path $p.Tmp 'access-test.cmd'
+    $pyCode = @'
+import json, os, sys, getpass
+print("account:", getpass.getuser(), "/ python:", sys.version.split()[0])
+with open(sys.argv[1], encoding="utf-8") as f:
+    paths = json.load(f)
+for path in paths:
+    try:
+        os.lstat(path)
+        result = "OK"
+    except Exception as e:
+        result = "NG  %s: %s" % (type(e).__name__, e)
+    print("%-6s %s" % ("lstat", path), "->", result)
+'@
+    [System.IO.File]::WriteAllText($pyFile, $pyCode, (New-Object System.Text.UTF8Encoding($false)))
+    # パスの一覧はファイルで渡す (コマンドラインだと "E:\" の末尾の \ が引用符のエスケープと解釈されるため)
+    $jsonFile = Join-Path $p.Tmp 'access-test.json'
+    [System.IO.File]::WriteAllText($jsonFile, (ConvertTo-Json -InputObject @($paths)), (New-Object System.Text.UTF8Encoding($false)))
+    $cmd = "@echo off`r`nwhoami /groups > `"$out`" 2>&1`r`n`"$py`" `"$pyFile`" `"$jsonFile`" >> `"$out`" 2>&1`r`n"
+    Write-BatchFile $cmdFile $cmd
+    Remove-Item -LiteralPath $out -ErrorAction SilentlyContinue
+
+    $taskName = "jfs-test-$($UserEnv.name)"
+    try {
+        Register-JfsTask $taskName (Get-AccountName $UserEnv) $cmdFile $p.Tmp 'jupyter-for-share: access test' -OnDemand
+        Start-ScheduledTask -TaskPath $script:TaskPath -TaskName $taskName
+        $deadline = (Get-Date).AddSeconds(60)
+        do {
+            Start-Sleep -Seconds 2
+            $t = Get-JfsTask $taskName
+        } while ($t -and [string]$t.State -eq 'Running' -and (Get-Date) -lt $deadline)
+        $info = Get-ScheduledTaskInfo -TaskPath $script:TaskPath -TaskName $taskName -ErrorAction SilentlyContinue
+    } finally {
+        $t = Get-JfsTask $taskName
+        if ($t) { Unregister-ScheduledTask -InputObject $t -Confirm:$false }
+        # テスト用のタスク登録でパスワードを変えたので、本来のタスクを登録し直す
+        Register-UserTask $UserEnv
+    }
+    if (-not (Test-Path -LiteralPath $out)) {
+        $result = if ($info) { Get-TaskResultText $info.LastTaskResult } else { '不明' }
+        Write-Check $false "実行用アカウントでのテストを実行できませんでした (タスクの結果: $result)"
+        return
+    }
+    $lines = @(Get-Content -LiteralPath $out -Encoding UTF8)
+    $ng = @($lines | Where-Object { $_ -match '-> NG' })
+    Write-Check ($ng.Count -eq 0) "実行用アカウント $(Get-AccountName $UserEnv) として各場所を読めるか (結果: $out)"
+    foreach ($l in @($lines | Where-Object { $_ -match '^(account|lstat)' })) {
+        $color = if ($l -match '-> NG') { 'Red' } else { 'Gray' }
+        Write-Host "       $l" -ForegroundColor $color
+    }
+    if ($ng.Count -gt 0) {
+        Write-Host '       読めない場所のアクセス権 (icacls):'
+        foreach ($l in $ng) {
+            $path = ($l -replace '^lstat\s+', '' -replace '\s+->.*$', '').Trim()
+            & icacls.exe $path 2>&1 | ForEach-Object { Write-Host "         $_" }
+        }
+    }
+}
+
 function Invoke-Doctor($Config, [string]$UserName) {
     Write-Host '== サーバー全体 ==' -ForegroundColor White
+    Write-Host "  バージョン: $(Get-JfsVersion)" 
     $py = Find-BasePython $Config
     Write-Check ([bool]$py) "Python: $py"
     Write-Check ([bool](Get-LocalGroup -Name $script:LocalGroup -ErrorAction SilentlyContinue)) "グループ $script:LocalGroup"
@@ -1680,6 +1906,11 @@ function Invoke-Doctor($Config, [string]$UserName) {
     }
 
     foreach ($u in (Get-TargetUsers $Config $UserName)) {
+        if ($UserName) {
+            Write-Host ''
+            Write-Host "== ユーザー '$($u.name)' のアクセステスト ==" -ForegroundColor White
+            Test-AccessAsUser $Config $u
+        }
         Test-ServiceTarget "ユーザー '$($u.name)'" (Get-TaskName $u) (Get-AccountName $u) ([int]$u.port) `
             "jupyter-for-share-$($u.name)" '/api/status' (Get-InstancePaths $u).Log ([string]$u.token) $u.name
     }
@@ -1981,6 +2212,22 @@ try {
 
         'network' {
             Invoke-NetworkSetup (Read-Config) -SetPrivate:$SetPrivate -Yes:$Yes
+        }
+
+        'uninstall' {
+            $cfg = Read-Config
+            if (-not $Force) {
+                $msg = 'jupyter-for-share が Windows に加えた変更をすべて元に戻します (サーバーは停止し、実行用アカウントは削除されます)。'
+                if ($DeleteFiles) { $msg += ' user フォルダ (ノートブックなど) も削除します。' }
+                $ans = Read-Host "$msg よろしいですか? [y/N]"
+                if ($ans -notmatch '^[yY]') { Write-Info '中止しました。'; break }
+            }
+            Invoke-Uninstall $cfg -DeleteFiles:$DeleteFiles
+        }
+
+        'version' {
+            Write-Host "jupyter-for-share $(Get-JfsVersion)"
+            Write-Host "場所: $script:RepoRoot"
         }
 
         'doctor' {
