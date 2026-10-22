@@ -1,0 +1,16 @@
+{
+  "defaults": {
+    "instancesRoot": "C:\\JupyterShare",
+    "python": "",
+    "domain": "",
+    "portStart": 8888,
+    "bindAddress": "0.0.0.0",
+    "allowFrom": ["LocalSubnet"],
+    "firewallProfiles": "Domain,Private",
+    "labLocale": "ja_JP",
+    "extraServerPackages": [],
+    "venvPackages": [],
+    "protectedPaths": ["auto"]
+  },
+  "servers": []
+}
