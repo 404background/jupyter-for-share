@@ -18,19 +18,22 @@ param(
     [string[]]$AllowFrom,
 
     [switch]$New,
-    [switch]$DeleteFiles,
+    [switch]$DeleteFiles,   # 互換のため残している (現在は remove で常にフォルダも削除する)
+    [switch]$KeepFiles,
     [switch]$Follow,
     [switch]$Force,
     [switch]$Background,
     [switch]$Status,
     [string]$LogFile,
+    [switch]$Yes,
+    [switch]$SetPrivate,
     [switch]$PauseAtEnd
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-$script:Commands = @('help', 'list', 'add', 'doctor', 'set', 'remove', 'start', 'stop', 'restart',
+$script:Commands = @('help', 'list', 'add', 'doctor', 'network', 'set', 'remove', 'start', 'stop', 'restart',
                      'url', 'token', 'logs', 'upgrade', 'reset-venv', 'firewall', 'protect', 'unprotect',
                      'monitor', 'monitor-stop')
 
@@ -39,7 +42,7 @@ $script:CommandHelp = @{
     'list'         = "jfs.cmd list`n  ユーザー環境 (ユーザー名・ポート・状態・フォルダ) とリソースモニターの状態を一覧表示します。"
     'add'          = "jfs.cmd add <ユーザー名>`n  ユーザー環境を作成して起動し、接続用 URL を表示します。`n  フォルダは user\<ユーザー名>、ポートは空いている番号から自動で決まります。`n  ユーザー名は半角英数字とハイフン (16 文字以内)。`n例: jfs.cmd add alice"
     'set'          = "jfs.cmd set <ユーザー名> [-Port 番号] [-AllowFrom 範囲]`n  ポートや、接続を許可する相手 (ファイアウォール) を変更して再起動します。`n例: jfs.cmd set alice -Port 23456`n    jfs.cmd set alice -AllowFrom 192.168.1.0/24,192.168.2.10"
-    'remove'       = "jfs.cmd remove <ユーザー名> [-DeleteFiles] [-Force]`n  ユーザー環境 (実行用アカウント・自動起動・ファイアウォール規則) を削除します。`n  -DeleteFiles: フォルダ user\<ユーザー名> も中身ごと削除`n  -Force: 確認せずに削除"
+    'remove'       = "jfs.cmd remove <ユーザー名> [-KeepFiles] [-Force]`n  ユーザー環境 (実行用アカウント・自動起動・ファイアウォール規則) を、フォルダ user\<ユーザー名> ごと削除します。`n  -KeepFiles: フォルダは残す`n  -Force: 確認せずに削除"
     'start'        = "jfs.cmd start [ユーザー名]`n  ユーザー環境を起動します。省略または all で全員分。"
     'stop'         = "jfs.cmd stop [ユーザー名]`n  ユーザー環境を停止します。止めた環境は PC を再起動しても止まったままです。省略または all で全員分。"
     'restart'      = "jfs.cmd restart [ユーザー名]`n  ユーザー環境を再起動します。省略または all で全員分。"
@@ -51,6 +54,7 @@ $script:CommandHelp = @{
     'monitor'      = "jfs.cmd monitor [-Port 番号] [-AllowFrom 範囲]`n  リソースモニター (CPU / メモリ / GPU) を設置・更新して起動します。既定のポートは 8000。"
     'monitor-stop' = "jfs.cmd monitor-stop`n  リソースモニターを停止します (再開は jfs.cmd monitor)。"
     'doctor'       = "jfs.cmd doctor [ユーザー名]`n  つながらないときの診断です。アカウント・自動起動タスク・待ち受けポート・HTTP 応答・`n  ファイアウォール・ネットワークの種類・ログを確認し、問題のある箇所に [NG] を表示します。"
+    'network'      = "jfs.cmd network [-SetPrivate] [-Yes]`n  他の PC から接続できないとき用。ネットワークとファイアウォールの現状を確認して表示し、`n  必要な変更 (ポートの許可・ping の許可・名前解決の許可・python をブロックする規則の無効化) を`n  一覧にしてから、確認のうえ適用します。適用後にもう一度状態を表示します。`n  -SetPrivate: 「パブリック」の LAN 接続を「プライベート」に変更する`n  -Yes: 確認せずに適用する"
     'firewall'     = "jfs.cmd firewall`n  Windows ファイアウォール規則を設定ファイル (servers.json) に合わせて作り直します。"
     'protect'      = "jfs.cmd protect [-Background] [-Force]`njfs.cmd protect -Status`n  サーバー実行用アカウントから他のフォルダへのアクセスを禁止します。設定済みの場所は飛ばします。`n  -Background: 裏で実行 / -Force: 設定済みの場所も付け直す / -Status: 進み具合を表示"
     'unprotect'    = "jfs.cmd unprotect`n  protect で設定したアクセス禁止を解除します。"
@@ -73,8 +77,7 @@ jupyter-for-share 管理コマンド
   jfs.cmd list                          一覧と状態
   jfs.cmd url [ユーザー名]              接続用 URL を表示
   jfs.cmd start|stop|restart [ユーザー名] 起動 / 停止 / 再起動 (省略で全員)
-  jfs.cmd remove <ユーザー名> [-DeleteFiles]
-                                        削除 (-DeleteFiles でフォルダも削除)
+  jfs.cmd remove <ユーザー名>           フォルダごと削除 (-KeepFiles でフォルダは残す)
   jfs.cmd token <ユーザー名> -New       トークンを再発行
   jfs.cmd set <ユーザー名> -Port 番号   ポートなどを変更
   jfs.cmd logs <ユーザー名> [-Follow]   ログを表示
@@ -87,6 +90,7 @@ jupyter-for-share 管理コマンド
 
 サーバー全体
   jfs.cmd doctor [ユーザー名]           つながらないときの診断
+  jfs.cmd network [-SetPrivate]         他の PC から接続できるようにネットワーク設定を確認・変更
   jfs.cmd firewall                      ファイアウォール規則を更新
   jfs.cmd protect [-Background]         他のフォルダへのアクセスを禁止 (-Status で進み具合)
   jfs.cmd unprotect                     アクセス禁止を解除
@@ -641,7 +645,7 @@ function Show-MonitorUrls($Config) {
 
 function Sync-FirewallRules($Config) {
     Get-NetFirewallRule -Group $script:FirewallGroup -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-    $profiles = [string](Get-Value $Config.defaults 'firewallProfiles' 'Domain,Private')
+    $profiles = [string](Get-Value $Config.defaults 'firewallProfiles' 'Any')
     $defaultAllow = @(Get-Value $Config.defaults 'allowFrom' @('LocalSubnet'))
     $rules = @()
     foreach ($s in @($Config.users)) {
@@ -864,6 +868,196 @@ function Remove-UserLeftovers([string]$UserName, [string]$Folder) {
     }
 }
 
+# ---- 他の PC から接続できるようにする (jfs.cmd network) ----
+# 現状を確認 → 必要な変更を一覧表示 → 確認 → 適用 → 再確認 の順に行う。
+# ping と名前解決の規則は、ポートの規則 (Sync-FirewallRules で作り直す) とは別のグループにする。
+
+$script:NetworkRuleGroup = 'jupyter-for-share-network'
+
+function Get-LanAdapters {
+    $profiles = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue)
+    $result = @()
+    foreach ($ip in @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                      Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' })) {
+        $prof = $profiles | Where-Object { $_.InterfaceIndex -eq $ip.InterfaceIndex } | Select-Object -First 1
+        $result += [pscustomobject]@{
+            Index     = $ip.InterfaceIndex
+            Alias     = $ip.InterfaceAlias
+            Address   = "$($ip.IPAddress)/$($ip.PrefixLength)"
+            Category  = if ($prof) { [string]$prof.NetworkCategory } else { '(なし)' }
+            Network   = if ($prof) { [string]$prof.Name } else { '' }
+            Tailscale = ($ip.InterfaceAlias -match 'Tailscale') -or ($ip.IPAddress -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.')
+            Virtual   = ($ip.InterfaceAlias -match 'vEthernet|WSL|VirtualBox|VMware|Hyper-V|Loopback')
+        }
+    }
+    return $result
+}
+
+function Get-ExpectedPorts($Config) {
+    $ports = @()
+    foreach ($u in @($Config.users)) { $ports += [pscustomobject]@{ Label = "ユーザー '$($u.name)'"; Port = [int]$u.port; Rule = "jupyter-for-share-$($u.name)" } }
+    if ([bool](Get-Value $Config.monitor 'enabled' $false)) {
+        $ports += [pscustomobject]@{ Label = 'リソースモニター'; Port = [int]$Config.monitor.port; Rule = 'jupyter-for-share-_monitor' }
+    }
+    return $ports
+}
+
+function Get-PythonBlockRules {
+    return @(Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue | Where-Object { $_.Program -match 'python' } |
+        ForEach-Object { Get-NetFirewallRule -AssociatedNetFirewallApplicationFilter $_ -ErrorAction SilentlyContinue } |
+        Where-Object { $_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Block' })
+}
+
+# 現状を表示し、必要な変更 (説明と実行内容) の一覧を返す
+function Get-NetworkPlan($Config, [switch]$SetPrivate, [switch]$Quiet) {
+    $plan = New-Object System.Collections.ArrayList
+    $say = { param($ok, $msg) if (-not $Quiet) { Write-Check $ok $msg } }
+
+    if (-not $Quiet) { Write-Host '-- ネットワーク接続 --' -ForegroundColor White }
+    $adapters = @(Get-LanAdapters)
+    foreach ($a in $adapters) {
+        $kind = if ($a.Tailscale) { ' [Tailscale]' } elseif ($a.Virtual) { ' [仮想]' } else { '' }
+        & $say ($a.Category -ne 'Public' -or $a.Tailscale -or $a.Virtual) "$($a.Alias)$kind : $($a.Address) / 種類: $($a.Category) $($a.Network)"
+    }
+    $publicLan = @($adapters | Where-Object { $_.Category -eq 'Public' -and -not $_.Tailscale -and -not $_.Virtual })
+    if ($SetPrivate) {
+        foreach ($a in $publicLan) {
+            [void]$plan.Add([pscustomobject]@{
+                Text = "ネットワーク '$($a.Alias)' の種類を「パブリック」から「プライベート」に変更"
+                Kind = 'private'; Data = $a.Index
+            })
+        }
+    } elseif ($publicLan.Count -gt 0 -and -not $Quiet) {
+        Write-Host '       (パブリックのままでも、下の規則を全プロファイル対象にすることで接続できるようにします。'
+        Write-Host '        種類自体をプライベートに変えたい場合は -SetPrivate を付けてください)'
+    }
+
+    if (-not $Quiet) { Write-Host '-- ファイアウォールのプロファイル --' -ForegroundColor White }
+    foreach ($f in @(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction SilentlyContinue)) {
+        $localOk = -not ($f.AllowLocalFirewallRules -eq 'False')
+        $msg = "$($f.Name): 有効=$($f.Enabled) / 受信の既定=$($f.DefaultInboundAction)"
+        if (-not $localOk) { $msg += ' / グループ ポリシーにより、このPCで追加した規則が無視されます (管理者に確認が必要)' }
+        & $say $localOk $msg
+    }
+
+    if (-not $Quiet) { Write-Host '-- ポートの許可 --' -ForegroundColor White }
+    $profilesSetting = [string](Get-Value $Config.defaults 'firewallProfiles' 'Any')
+    $needSync = $false
+    if ($profilesSetting -ne 'Any') {
+        & $say $false "規則の対象プロファイルが '$profilesSetting' のため、パブリックのネットワークからは接続できません"
+        $needSync = $true
+    }
+    foreach ($e in @(Get-ExpectedPorts $Config)) {
+        $rule = Get-NetFirewallRule -Name $e.Rule -ErrorAction SilentlyContinue
+        $listen = @(Get-NetTCPConnection -LocalPort $e.Port -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $_.LocalAddress } | Select-Object -Unique)
+        $listenText = if ($listen.Count) { "待ち受け: $($listen -join ', ')" } else { '待ち受けていない (jfs.cmd start / doctor で確認)' }
+        if ($listen | Where-Object { $_ -match '^(127\.|::1$)' }) { $listenText += ' ※ このPC内だけで待ち受けています' }
+        if ($rule) {
+            $addr = (Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule).RemoteAddress -join ', '
+            $ok = ($rule.Enabled -eq 'True') -and ([string]$rule.Profile -eq 'Any')
+            & $say $ok "$($e.Label) TCP $($e.Port): 規則あり (有効=$($rule.Enabled) / プロファイル=$($rule.Profile) / 接続元=$addr) / $listenText"
+            if (-not $ok) { $needSync = $true }
+        } else {
+            & $say $false "$($e.Label) TCP $($e.Port): 規則がありません / $listenText"
+            $needSync = $true
+        }
+    }
+    if ($needSync) {
+        [void]$plan.Add([pscustomobject]@{
+            Text = 'ポートの許可規則を、すべてのネットワークの種類 (ドメイン / プライベート / パブリック) で有効にして作り直す (接続元は allowFrom の範囲のまま)'
+            Kind = 'ports'; Data = $null
+        })
+    }
+
+    if (-not $Quiet) { Write-Host '-- ping と名前解決 --' -ForegroundColor White }
+    $allow = @(Get-Value $Config.defaults 'allowFrom' @('LocalSubnet'))
+    $extra = @(
+        @{ Name = 'jupyter-for-share-ping4'; Text = 'ping (ICMPv4 エコー要求) の受信を許可'; Args = @{ Protocol = 'ICMPv4'; IcmpType = '8' } },
+        @{ Name = 'jupyter-for-share-ping6'; Text = 'ping (ICMPv6 エコー要求) の受信を許可'; Args = @{ Protocol = 'ICMPv6'; IcmpType = '128' } },
+        @{ Name = 'jupyter-for-share-names'; Text = 'コンピューター名での接続に使う名前解決 (mDNS 5353 / LLMNR 5355 / NetBIOS 137, UDP) の受信を許可'
+           Args = @{ Protocol = 'UDP'; LocalPort = @('5353', '5355', '137') } }
+    )
+    foreach ($x in $extra) {
+        $rule = Get-NetFirewallRule -Name $x.Name -ErrorAction SilentlyContinue
+        $ok = $rule -and $rule.Enabled -eq 'True'
+        & $say ([bool]$ok) "$($x.Text): $(if ($ok) { '許可済み' } else { '未設定' })"
+        if (-not $ok) {
+            [void]$plan.Add([pscustomobject]@{ Text = $x.Text; Kind = 'rule'; Data = $x })
+        }
+    }
+
+    if (-not $Quiet) { Write-Host '-- python をブロックする規則 --' -ForegroundColor White }
+    $blocks = @(Get-PythonBlockRules)
+    if ($blocks.Count -eq 0) { & $say $true 'ありません' }
+    foreach ($b in $blocks) {
+        & $say $false "'$($b.DisplayName)' (プロファイル=$($b.Profile)) が python の受信をブロックしています"
+        [void]$plan.Add([pscustomobject]@{
+            Text = "python をブロックしている規則 '$($b.DisplayName)' を無効にする (削除はしない)"
+            Kind = 'unblock'; Data = $b.Name
+        })
+    }
+    return $plan.ToArray()
+}
+
+function Invoke-NetworkChange($Item) {
+    switch ($Item.Kind) {
+        'private' { Set-NetConnectionProfile -InterfaceIndex ([int]$Item.Data) -NetworkCategory Private }
+        'ports' {
+            $c = Read-Config
+            Set-Value $c.defaults 'firewallProfiles' 'Any'
+            Save-Config $c
+            Sync-FirewallRules $c
+        }
+        'rule' {
+            $x = $Item.Data
+            $ruleArgs = $x.Args
+            $allow = @(Get-Value (Read-Config).defaults 'allowFrom' @('LocalSubnet'))
+            Get-NetFirewallRule -Name $x.Name -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+            New-NetFirewallRule -Name $x.Name -DisplayName "jupyter-for-share: $($x.Text)" -Group $script:NetworkRuleGroup `
+                -Direction Inbound -Action Allow -RemoteAddress $allow -Profile Any @ruleArgs | Out-Null
+        }
+        'unblock' { Disable-NetFirewallRule -Name ([string]$Item.Data) }
+    }
+}
+
+function Invoke-NetworkSetup($Config, [switch]$SetPrivate, [switch]$Yes) {
+    Write-Host '== 現在の状態 ==' -ForegroundColor White
+    $plan = @(Get-NetworkPlan $Config -SetPrivate:$SetPrivate)
+    Write-Host ''
+    if ($plan.Count -eq 0) {
+        Write-Ok '変更が必要な設定はありません。'
+    } else {
+        Write-Host '== 適用する変更 ==' -ForegroundColor White
+        for ($i = 0; $i -lt $plan.Count; $i++) { Write-Host ("  {0}. {1}" -f ($i + 1), $plan[$i].Text) }
+        Write-Host ''
+        if (-not $Yes) {
+            $ans = Read-Host '上の変更を適用しますか? [y/N]'
+            if ($ans -notmatch '^[yY]') { Write-Info '変更せずに終了しました。'; return }
+        }
+        foreach ($item in $plan) {
+            try {
+                Invoke-NetworkChange $item
+                Write-Ok $item.Text
+            } catch {
+                Write-Warn "$($item.Text): 失敗しました ($($_.Exception.Message))"
+            }
+        }
+        Write-Host ''
+        Write-Host '== 変更後の状態 ==' -ForegroundColor White
+        $rest = @(Get-NetworkPlan (Read-Config) -SetPrivate:$SetPrivate)
+        Write-Host ''
+        if ($rest.Count -eq 0) { Write-Ok 'すべて設定済みです。' } else { Write-Warn "まだ $($rest.Count) 件の項目が残っています (上の [NG] を確認してください)。" }
+    }
+    Write-Host ''
+    Write-Host 'このPCのアドレス (別の PC から ping や URL で使うもの):'
+    foreach ($a in @(Get-LanAdapters | Where-Object { -not $_.Virtual })) { Write-Host "    $($a.Alias): $($a.Address)" }
+    Write-Host ''
+    Write-Host 'これでも別の PC から ping が通らない場合は、PC 側ではなくネットワーク側の原因が考えられます:'
+    Write-Host '  - 接続元の PC が別のサブネット (アドレスの前半が違う) にいる → jfs.cmd set <ユーザー名> -AllowFrom で範囲を追加'
+    Write-Host '  - Wi-Fi のゲストネットワークや「プライバシーセパレーター / AP アイソレーション」で端末同士の通信が禁止されている'
+    Write-Host '  - セキュリティソフト (Windows Defender 以外のファイアウォール) が通信を止めている'
+}
+
 # ---- 診断 (jfs.cmd doctor) ----
 
 function Write-Check([bool]$Ok, [string]$Message) {
@@ -1002,7 +1196,7 @@ try {
             if ($folder -match "[%`"',]") { throw "フォルダのパスに使えない文字 (% `" ' ,) が含まれています: $folder" }
             if ((Test-Path -LiteralPath $folder) -or (Get-LocalUser -Name "$($script:UserPrefix)$userName" -ErrorAction SilentlyContinue)) {
                 throw ("以前の作成途中のデータ (フォルダ $folder またはアカウント $($script:UserPrefix)$userName) が残っています。" +
-                       "'jfs.cmd remove $userName -DeleteFiles' で片付けてから、もう一度作成してください。")
+                       "'jfs.cmd remove $userName' で片付けてから、もう一度作成してください。")
             }
 
             $u = [pscustomobject]@{ name = $userName; port = (Get-RandomPort $cfg); path = $folder; token = (New-Token) }
@@ -1032,7 +1226,7 @@ try {
                     Save-Config $cfg
                     Sync-FirewallRules $cfg
                 } catch {
-                    Write-Warn "片付けの一部に失敗しました ($($_.Exception.Message))。'jfs.cmd remove $userName -DeleteFiles' で片付けてください。"
+                    Write-Warn "片付けの一部に失敗しました ($($_.Exception.Message))。'jfs.cmd remove $userName' で片付けてください。"
                 }
                 throw "ユーザー '$userName' の作成に失敗しました: $err"
             }
@@ -1074,8 +1268,8 @@ try {
             if (-not $u -and -not $leftover) { throw "ユーザー '$userName' は登録されていません。'jfs.cmd list' で確認してください。" }
             if (-not $Force) {
                 $msg = "ユーザー '$userName' の環境を削除します。"
-                if ($DeleteFiles) { $msg += "フォルダ $folder も中身ごと削除されます。" }
-                else { $msg += "フォルダ $folder は残ります。" }
+                if ($KeepFiles) { $msg += "フォルダ $folder は残ります。" }
+                else { $msg += "フォルダ $folder も中身 (ノートブックなど) ごと削除されます。" }
                 $ans = Read-Host "$msg よろしいですか? [y/N]"
                 if ($ans -notmatch '^[yY]') { Write-Info '中止しました。'; break }
             }
@@ -1084,8 +1278,8 @@ try {
                 Save-Config $cfg
             }
             Sync-FirewallRules $cfg
-            if ($DeleteFiles) { Remove-UserLeftovers $userName $folder }
-            else { Remove-UserLeftovers $userName '' }
+            if ($KeepFiles) { Remove-UserLeftovers $userName '' }
+            else { Remove-UserLeftovers $userName $folder }
             Write-Ok "ユーザー '$userName' の環境を削除しました。"
         }
 
@@ -1190,6 +1384,10 @@ try {
 
         'firewall' {
             Sync-FirewallRules (Read-Config)
+        }
+
+        'network' {
+            Invoke-NetworkSetup (Read-Config) -SetPrivate:$SetPrivate -Yes:$Yes
         }
 
         'doctor' {

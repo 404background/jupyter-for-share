@@ -119,6 +119,7 @@ function Invoke-Setup {
        jfs.cmd add alice
   2. 表示された URL を本人に伝え、別の PC のブラウザで開いてもらう
   3. 一覧・停止などは 'jfs.cmd help' を参照
+  4. 別の PC からつながらない場合は 'jfs.cmd network' (ネットワーク・ファイアウォール設定の確認と変更)
 '@
 }
 

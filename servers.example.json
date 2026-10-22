@@ -6,7 +6,7 @@
     "portRange": [20000, 29999],
     "bindAddress": "0.0.0.0",
     "allowFrom": ["LocalSubnet"],
-    "firewallProfiles": "Domain,Private",
+    "firewallProfiles": "Any",
     "labLocale": "ja_JP",
     "extraServerPackages": [],
     "venvPackages": [],

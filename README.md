@@ -108,9 +108,10 @@ jfs.cmd add alice
 | `jfs.cmd logs <ユーザー名> [-Follow]` | ログを表示 (`jfs.cmd logs monitor` でリソースモニターのログ) |
 | `jfs.cmd upgrade [ユーザー名]` | JupyterLab 本体を更新 |
 | `jfs.cmd reset-venv <ユーザー名>` | venv を作り直す (入れたパッケージを初期化) |
-| `jfs.cmd remove <ユーザー名> [-DeleteFiles]` | 環境を削除。`-DeleteFiles` を付けるとフォルダも削除 |
+| `jfs.cmd remove <ユーザー名>` | 環境をフォルダ (`user\<ユーザー名>`) ごと削除。`-KeepFiles` を付けるとフォルダは残す |
 | `jfs.cmd monitor [-Port 8000]` | リソースモニターを設置・更新して起動 |
 | `jfs.cmd monitor-stop` | リソースモニターを停止 |
+| `jfs.cmd network [-SetPrivate]` | 他の PC から接続できるように、ネットワーク・ファイアウォールの現状を確認してから設定を変更 |
 | `jfs.cmd doctor [ユーザー名]` | つながらないときの診断 (問題のある箇所に [NG] を表示) |
 | `jfs.cmd firewall` | ファイアウォール規則を作り直す |
 | `jfs.cmd protect [-Background]` | 他フォルダへのアクセス禁止を設定 (設定済みの場所は飛ばす。`-Force` で付け直し) |
@@ -145,6 +146,37 @@ JupyterLab を開くとファイル一覧に表示されます。
 - 各ユーザー環境の稼働状況とリンク
 
 モニターも専用アカウント (`jfsmon`) で動き、他のフォルダにはアクセスできません。
+
+## 他の PC からつながらないとき (jfs.cmd network)
+
+サーバー PC 自身や Tailscale 経由ではつながるのに、同じ LAN の別の PC からつながらない (ping も通らない) 場合は、
+多くの場合 LAN の接続が「パブリック」ネットワークになっていて、ファイアウォールが受信を止めています。
+管理者として次を実行してください。
+
+```bat
+jfs.cmd network -SetPrivate
+```
+
+1. **現在の状態を表示**: ネットワーク接続ごとの種類 (パブリック / プライベート)、ファイアウォールの状態、
+   各ポートの許可規則と待ち受け状況、ping・名前解決の許可、python をブロックする規則
+2. **適用する変更を一覧表示**して、確認 (`y`) を求めます
+3. 変更を適用し、**もう一度状態を表示**して結果を確認します
+
+変更する内容 (必要なものだけ):
+
+| 変更 | 内容 |
+| --- | --- |
+| ネットワークの種類 | `-SetPrivate` を付けた場合、「パブリック」の LAN 接続を「プライベート」に変更 (Tailscale や仮想アダプターは対象外) |
+| ポートの許可 | 各ユーザー環境とリソースモニターのポートを、すべてのネットワークの種類で許可 (接続元は同じサブネットのまま) |
+| ping | ICMP エコー要求 (IPv4 / IPv6) の受信を許可 |
+| 名前解決 | コンピューター名でつながるよう、mDNS / LLMNR / NetBIOS 名 (UDP 5353 / 5355 / 137) の受信を許可 |
+| python のブロック | 過去に「アクセスを許可しない」を選んでできた、python をブロックする規則を無効化 (削除はしない) |
+
+`-SetPrivate` を付けない場合はネットワークの種類は変えず、規則側をパブリックでも有効にして接続できるようにします。
+`-Yes` を付けると確認なしで適用します。
+
+これでも ping が通らない場合は、PC ではなくネットワーク側 (Wi-Fi の AP アイソレーション / ゲストネットワーク、
+別のサブネット、他社製セキュリティソフトのファイアウォールなど) が原因の可能性があります。
 
 ## ドメイン名でアクセスする
 
@@ -232,7 +264,7 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 | `defaults.portRange` | `[20000, 29999]` | ユーザー環境のポートをランダムに選ぶ範囲 |
 | `defaults.bindAddress` | `0.0.0.0` | 待ち受けるアドレス |
 | `defaults.allowFrom` | `["LocalSubnet"]` | ファイアウォールで接続を許可する相手 |
-| `defaults.firewallProfiles` | `Domain,Private` | ファイアウォール規則を有効にするネットワークの種類 |
+| `defaults.firewallProfiles` | `Any` | ファイアウォール規則を有効にするネットワークの種類 (接続元は `allowFrom` で制限) |
 | `defaults.labLocale` | `ja_JP` | JupyterLab の表示言語 (`en` で英語) |
 | `defaults.extraServerPackages` | `[]` | JupyterLab 側に追加する拡張機能など (例: `"jupyterlab-git"`) |
 | `defaults.venvPackages` | `[]` | 新しく作る venv に最初から入れるパッケージ |
@@ -256,14 +288,15 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 
 ## トラブルシューティング
 
-まず `jfs.cmd doctor` を実行してください。アカウント・自動起動タスク・待ち受けポート・このPCからの HTTP 応答・
+別の PC からだけつながらない場合は、まず上の「他の PC からつながらないとき」の `jfs.cmd network` を実行してください。
+それ以外は `jfs.cmd doctor` を実行してください。アカウント・自動起動タスク・待ち受けポート・このPCからの HTTP 応答・
 ファイアウォール・ネットワークの種類・ログを確認し、問題のある箇所に `[NG]` と原因を表示します
 (`jfs.cmd doctor <ユーザー名>` で 1 人分だけ)。
 
 - **以前のバージョンで作成に失敗した / 一覧に出ない**: 以前のバージョンには、Windows PowerShell 5.1 で設定ファイル
   (`servers.json`) の一覧部分が壊れる不具合がありました。最新版では読み込み時に自動で修復します (修復前のファイルは `servers.json.bak`)。
   - `jfs.cmd list` で状態が「未登録」のユーザーは、`jfs.cmd set <ユーザー名>` で自動起動を登録し直せます
-  - 作成途中のフォルダやアカウントが残っていて作成できない場合は、`jfs.cmd remove <ユーザー名> -DeleteFiles` で片付けてから作り直してください
+  - 作成途中のフォルダやアカウントが残っていて作成できない場合は、`jfs.cmd remove <ユーザー名>` で片付けてから作り直してください
 
 - **別の PC からつながらない**
   - `jfs.cmd list` で「起動中」になっているか確認。なっていなければ `jfs.cmd logs <ユーザー名>` でエラーを確認
@@ -276,5 +309,5 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 - **ターミナルでスクリプト (Activate.ps1 など) が実行できない**: 実行ポリシーは RemoteSigned に設定済みです。
   インターネットから取得したスクリプトはブロックされることがあるので `Unblock-File` を使ってください
 - **アクセス禁止の設定が終わったか知りたい**: `jfs.cmd protect -Status` で、実行中かどうか・設定済みの場所・ログの末尾が表示されます
-- **全部やり直したい**: `jfs.cmd remove <ユーザー名> -DeleteFiles` で各環境を削除し、`jfs.cmd monitor-stop`、`jfs.cmd unprotect` を実行します。
+- **全部やり直したい**: `jfs.cmd remove <ユーザー名>` で各環境を削除し、`jfs.cmd monitor-stop`、`jfs.cmd unprotect` を実行します。
   アカウント `jfsmon` とグループ `jupyter-for-share-users` は「コンピューターの管理」から削除できます
