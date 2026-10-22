@@ -680,9 +680,10 @@ function Protect-Folders($Config, [switch]$Reapply) {
     $sid = Get-LocalGroupSid
     $targets = @(Get-ProtectTargets $Config)
     $applied = @(Get-ProtectedApplied $Config)
-    # 既に拒否が付いているフォルダは飛ばす (付け直すと中の全ファイルを書き換えるため時間がかかる)
-    $todo = @($targets | Where-Object { $Reapply -or -not (Test-HasDeny $_ $sid) })
-    foreach ($t in $targets) { if ($todo -notcontains $t -and $applied -notcontains $t) { $applied += $t } }
+    # 最後まで処理が終わった記録があり、拒否も付いているフォルダは飛ばす
+    # (付け直すと中の全ファイルを書き換えるため時間がかかる)。
+    # 途中で中断した場所は記録がないので、次回もう一度最初から処理する。
+    $todo = @($targets | Where-Object { $Reapply -or ($applied -notcontains $_) -or -not (Test-HasDeny $_ $sid) })
 
     if ($todo.Count -eq 0) {
         Save-ProtectedApplied $applied
