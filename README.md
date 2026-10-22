@@ -2,49 +2,64 @@
 
 Windows PC を JupyterLab サーバーにして、LAN 内の別の PC からブラウザで使うためのセットアップスクリプトです。
 
-- **ポートごとに別のサーバー**を作れます (`jfs add alice -Port 8888`、`jfs add bob -Port 8889` …)
-- **サーバーごとにフォルダが分かれ**、各サーバーは**自分のフォルダの中だけ**読み書きできます
+- **ユーザー名を指定するだけ**でユーザーごとの環境を作れます (`jfs add alice`)。ポートは空いている番号が自動 (ランダム) で割り当てられます
+- 環境は**このリポジトリの `user` フォルダの中にユーザーごとに作られ**、各環境は**自分のフォルダの中だけ**読み書きできます
 - ノートブック・**ターミナル (PowerShell)** の両方が使えます
-- パッケージはサーバーごとの **Python 仮想環境 (venv)** に `pip install` で自由に入れられます。`git clone` も使えます
-- **コンピューター名やドメイン名**でアクセスできます (例: `http://jupyter-pc:8888/`)
-- Docker は使いません。Windows 標準の機能 (ローカルユーザー・NTFS アクセス権・タスクスケジューラ・ファイアウォール) で構成します
+- パッケージはユーザーごとの **Python 仮想環境 (venv)** に `pip install` で自由に入れられます。`git clone` も使えます
+- **リソースモニター**専用のポート (既定 8000) で、サーバーの CPU・メモリ・GPU の使用率をブラウザで確認できます
+- **コンピューター名やドメイン名**でアクセスできます (例: `http://jupyter-pc:23456/`)
+- Docker は使いません。Windows 標準の機能 (ローカルアカウント・NTFS アクセス権・タスクスケジューラ・ファイアウォール) で構成します
 
-## しくみ
+## 仕組み
 
 ```
-サーバー PC (Windows)
-├─ C:\JupyterShare\              ← サーバーフォルダの置き場 (instancesRoot)
-│   ├─ alice\                    ← サーバー "alice" (ポート 8888) / Windows ユーザー jfs-alice で実行
-│   │   ├─ work\                 ← JupyterLab のルート。ノートブックや git clone したものはここ
-│   │   ├─ venv\                 ← パッケージを入れる venv (ノートブックのカーネル・ターミナルの python/pip)
-│   │   └─ .server\              ← JupyterLab 本体・設定・ログ (隠しフォルダ)
-│   └─ bob\                      ← サーバー "bob" (ポート 8889) / ユーザー jfs-bob
-└─ タスクスケジューラ \jupyter-for-share\jfs-alice, jfs-bob  ← Windows 起動時に自動起動
+jupyter-for-share\                    ← このリポジトリ (管理者だけが読み書きできるように設定されます)
+├─ setup.cmd / jfs.cmd               ← セットアップ / 管理コマンド
+├─ servers.json                      ← 設定 (各ユーザーのポート・トークン)
+├─ monitor\                          ← リソースモニター (ポート 8000 / アカウント jfsmon で実行)
+└─ user\
+    ├─ alice\                        ← ユーザー alice の環境 (ポート例 23456 / アカウント jfs-alice で実行)
+    │   ├─ work\                     ← JupyterLab のルート。ノートブックや git clone したものはここ
+    │   │   └─ README.md             ← 本人向けの説明 (環境とリソースモニターのアドレス)
+    │   ├─ venv\                     ← パッケージを入れる venv (カーネル・ターミナルの python/pip)
+    │   └─ .server\                  ← JupyterLab 本体・設定・ログ (隠しフォルダ)
+    └─ bob\                          ← ユーザー bob の環境 (別のポート / アカウント jfs-bob)
 ```
 
-- 各サーバーは専用の Windows ローカルユーザー (`jfs-<名前>`) として動きます。JupyterLab だけでなく、
-  ノートブックのコードやターミナルもこのユーザーの権限で動くため、**NTFS のアクセス権で読み書きできる範囲が制限**されます。
+- 各環境は専用の Windows ローカルアカウント (`jfs-<ユーザー名>`) として動きます。JupyterLab だけでなく、
+  ノートブックのコードやターミナルもこのアカウントの権限で動くため、**NTFS のアクセス権で読み書きできる範囲が制限**されます。
   (JupyterLab の設定だけで制限すると、ターミナルやコードからは PC 中のファイルが見えてしまうため、この方式にしています)
-- サーバー用ユーザーは画面からのサインイン・リモートデスクトップ・ネットワーク共有へのログオンが禁止され、サインイン画面にも表示されません。
-- タスクスケジューラで起動するので、**誰もサインインしていなくても**サーバーが動きます。
+- サーバー実行用アカウントは画面からのサインイン・リモートデスクトップ・ネットワーク共有へのログオンが禁止され、サインイン画面にも表示されません。
+- タスクスケジューラで起動するので、**誰もサインインしていなくても**PC の起動時に自動で動きます。
+- リポジトリのフォルダ (スクリプトや `servers.json`) はサーバー実行用アカウントからは読み書きできません。
 
 ## 必要なもの
 
 - Windows 10 / 11 (64bit)。サーバーとして使う PC の管理者権限
 - インターネット接続 (Python・Git・JupyterLab のダウンロード用)
 - 接続する PC と同じ LAN
+- (GPU の使用率表示) NVIDIA の GPU はドライバ付属の `nvidia-smi` で詳しく表示します。その他の GPU も Windows の情報から使用率を表示します
 
 ## セットアップ (サーバー PC で 1 回だけ)
 
-1. このリポジトリをサーバー PC にダウンロードします (`git clone` または ZIP をダウンロードして展開)。
-   パスに日本語や空白が無い場所 (例: `C:\tools\jupyter-for-share`) をおすすめします。
+1. このリポジトリをサーバー PC にクローンします。
+   ユーザー環境はこのフォルダの中に作られるので、空き容量があり、パスに日本語や空白が無い場所 (例: `C:\jupyter-for-share`) をおすすめします。
+
+   ```bat
+   cd C:\
+   git clone https://github.com/404background/jupyter-for-share.git
+   cd jupyter-for-share
+   ```
+
+   (Git が無い場合は ZIP をダウンロードして展開しても構いません)
+
 2. `setup.cmd` をダブルクリック (またはコマンドプロンプトで実行) します。管理者権限の確認が出たら「はい」を選びます。
 
-```bat
-setup.cmd
-rem オプションの例: サーバーフォルダの場所を D ドライブにし、ドメイン名を設定し、スリープを無効にする
-setup.cmd -InstancesRoot D:\JupyterShare -Domain jupyter.home.arpa -DisableSleep
-```
+   ```bat
+   setup.cmd
+   rem オプションの例: ドメイン名を設定し、スリープを無効にする
+   setup.cmd -Domain jupyter.home.arpa -DisableSleep
+   ```
 
 setup で行うこと:
 
@@ -52,38 +67,36 @@ setup で行うこと:
 | --- | --- |
 | Python / Git のインストール | winget で全ユーザー向けにインストール (インストール済みならスキップ) |
 | 設定ファイル作成 | `servers.json` (`servers.example.json` をコピー) |
-| サーバー用グループ | `jupyter-for-share-users` を作成し、ログオン権限を設定 |
-| フォルダのアクセス権 | サーバーフォルダの置き場と `C:\ProgramData\jupyter` を管理者以外が変更できないようにする |
+| サーバー実行用グループ | `jupyter-for-share-users` を作成し、ログオン権限を設定 |
+| フォルダのアクセス権 | このリポジトリ・`user` フォルダ・`C:\ProgramData\jupyter` を管理者以外が変更できないようにする |
 | 他フォルダへのアクセス禁止 | 後述の「アクセス制限」(`-SkipProtect` で省略可) |
+| リソースモニター | ポート 8000 で起動 (`-MonitorPort 9000` で変更、`-SkipMonitor` で省略可) |
 
-## サーバーを作る・管理する
+## ユーザー環境を作る・管理する
 
 `jfs.cmd` を使います (管理者権限が必要です。通常のコマンドプロンプトから実行すると UAC の確認が出ます)。
 
 ```bat
-rem ポート 8888 にサーバー "alice" を作成して起動 (フォルダ: C:\JupyterShare\alice)
-jfs add alice -Port 8888
-
-rem 名前を省略するとポート番号から自動で名前を付けます (この例では "port8889")
-jfs add -Port 8889
-
-rem よく使うパッケージを最初から入れておく / 接続できる相手を限定する
-jfs add lab -Port 8890 -Packages numpy,pandas,matplotlib -AllowFrom 192.168.1.0/24
+rem ユーザー alice の環境を作成して起動 (フォルダ: user\alice、ポートは自動)
+jfs add alice
 ```
 
-作成が終わると接続用 URL が表示されます。
+作成が終わると接続用 URL (トークン付き) が表示されるので、本人に伝えてください。
+ユーザー名は半角英数字とハイフン (16 文字以内) で、大文字は小文字に変換されます。
 
 | コマンド | 内容 |
 | --- | --- |
-| `jfs list` | サーバーの一覧と状態 |
-| `jfs url [名前]` | 接続用 URL を表示 |
-| `jfs start / stop / restart [名前]` | 起動 / 停止 / 再起動 (名前を省略すると全サーバー)。停止したサーバーは PC を再起動しても止まったまま |
-| `jfs set <名前> -Port 8895` | ポートを変更 (`-AllowFrom` で接続許可範囲も変更可) |
-| `jfs token <名前> -New` | アクセストークン (パスワード代わり) を再発行 |
-| `jfs logs <名前> [-Follow]` | サーバーのログを表示 |
-| `jfs upgrade [名前]` | JupyterLab 本体を更新 |
-| `jfs reset-venv <名前>` | venv を作り直す (入れたパッケージを初期化) |
-| `jfs remove <名前> [-DeleteFiles]` | サーバーを削除。`-DeleteFiles` を付けるとフォルダも削除 |
+| `jfs list` | ユーザー環境とリソースモニターの一覧・状態・ポート |
+| `jfs url [ユーザー名]` | 接続用 URL を表示 (省略で全員分 + リソースモニター) |
+| `jfs start / stop / restart [ユーザー名]` | 起動 / 停止 / 再起動 (省略すると全員)。停止した環境は PC を再起動しても止まったまま |
+| `jfs token <ユーザー名> -New` | アクセストークン (パスワード代わり) を再発行 |
+| `jfs set <ユーザー名> -Port 23456` | ポートを固定の番号に変更 (`-AllowFrom` で接続を許可する相手も変更可) |
+| `jfs logs <ユーザー名> [-Follow]` | ログを表示 (`jfs logs monitor` でリソースモニターのログ) |
+| `jfs upgrade [ユーザー名]` | JupyterLab 本体を更新 |
+| `jfs reset-venv <ユーザー名>` | venv を作り直す (入れたパッケージを初期化) |
+| `jfs remove <ユーザー名> [-DeleteFiles]` | 環境を削除。`-DeleteFiles` を付けるとフォルダも削除 |
+| `jfs monitor [-Port 8000]` | リソースモニターを設置・更新して起動 |
+| `jfs monitor-stop` | リソースモニターを停止 |
 | `jfs firewall` | ファイアウォール規則を作り直す |
 | `jfs protect / unprotect` | 他フォルダへのアクセス禁止を設定 / 解除 |
 
@@ -92,22 +105,37 @@ jfs add lab -Port 8890 -Packages numpy,pandas,matplotlib -AllowFrom 192.168.1.0/
 `jfs url` で表示される URL をブラウザで開きます。
 
 ```
-http://jupyter.home.arpa:8888/lab?token=xxxx   ← setup で -Domain を指定した場合
-http://jupyter-pc:8888/lab?token=xxxx          ← コンピューター名
-http://jupyter-pc.local:8888/lab?token=xxxx    ← mDNS (Mac / iPhone / Linux など)
-http://192.168.1.10:8888/lab?token=xxxx        ← IP アドレス
+http://jupyter.home.arpa:23456/lab?token=xxxx   ← setup で -Domain を指定した場合
+http://jupyter-pc:23456/lab?token=xxxx          ← コンピューター名
+http://jupyter-pc.local:23456/lab?token=xxxx    ← mDNS (Mac / iPhone / Linux など)
+http://192.168.1.10:23456/lab?token=xxxx        ← IP アドレス
 ```
 
-一度開くとブラウザに記憶されるので、2 回目以降は `http://jupyter-pc:8888/` だけで入れます。
-トークンはパスワードと同じなので、使う人以外に知られないようにしてください。
+一度開くとブラウザに記憶されるので、2 回目以降は `http://jupyter-pc:23456/` だけで入れます。
+トークンはパスワードと同じなので、本人以外に知られないようにしてください。
 
-### ドメイン名でアクセスする
+各ユーザーの `work` フォルダには、本人向けの短い `README.md` (自分の環境とリソースモニターのアドレス、使い方) が自動で作られます。
+JupyterLab を開くとファイル一覧に表示されます。
+
+## リソースモニター
+
+`http://<サーバー>:8000/` をブラウザで開くと、次の情報が 2 秒ごとに更新されます (トークンは不要です)。
+
+- CPU 使用率 (全体・コアごと・直近 5 分のグラフ)
+- メモリ使用量
+- GPU 使用率・GPU メモリ・温度・消費電力 (NVIDIA の場合。その他の GPU は使用率と使用メモリ)
+- ユーザー環境のフォルダがあるディスクの使用量
+- 各ユーザー環境の稼働状況とリンク
+
+モニターも専用アカウント (`jfsmon`) で動き、他のフォルダにはアクセスできません。
+
+## ドメイン名でアクセスする
 
 IP アドレスの代わりに名前でアクセスする方法は 3 つあります。
 
-1. **コンピューター名** (設定不要): 同じ LAN の Windows PC からは `http://<コンピューター名>:8888/` で通常つながります。
+1. **コンピューター名** (設定不要): 同じ LAN の Windows PC からは `http://<コンピューター名>:<ポート>/` で通常つながります。
    分かりやすい名前にしたい場合は、サーバー PC の名前を変更します (`Rename-Computer -NewName jupyter-pc` → 再起動)。
-   Mac などからは `http://jupyter-pc.local:8888/` を試してください。
+   Mac などからは `http://jupyter-pc.local:<ポート>/` を試してください。
 2. **ルーター / 社内 DNS に登録** (おすすめ): ルーターの DHCP 設定でサーバー PC の IP を固定し、
    ルーターや DNS サーバーに `jupyter.home.arpa → 192.168.1.10` のような名前を登録します。
    そのうえで `setup.cmd -Domain jupyter.home.arpa` を実行すると、URL がその名前で表示されます。
@@ -124,7 +152,7 @@ IP アドレスの代わりに名前でアクセスする方法は 3 つあり�
 
 ## パッケージのインストールと git
 
-JupyterLab のターミナルを開くと PowerShell が `work` フォルダで起動し、`python` / `pip` はそのサーバーの venv を指しています。
+JupyterLab のターミナルを開くと PowerShell が `work` フォルダで起動し、`python` / `pip` はそのユーザーの venv を指しています。
 
 ```powershell
 pip install numpy pandas          # venv にインストールされ、ノートブックからすぐ使える
@@ -147,23 +175,25 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 
 ## アクセス制限について
 
-| 対象 | サーバー用ユーザー (jfs-xxx) からのアクセス |
+| 対象 | サーバー実行用アカウント (jfs-xxx) からのアクセス |
 | --- | --- |
-| 自分のサーバーフォルダ (`work`, `venv` など) | 読み書きできる |
+| 自分の環境のフォルダ (`work`, `venv` など) | 読み書きできる |
 | 自分の `.server\jupyterlab`, `.server\config` (JupyterLab 本体・設定) | 読み取りのみ |
-| 他のサーバーのフォルダ | できない |
-| 他のユーザーのプロファイル (`C:\Users\<名前>`、デスクトップ・ドキュメントなど) | できない (Windows の既定) |
+| 他のユーザーの環境、このリポジトリのスクリプト・設定ファイル | できない |
+| 他の Windows ユーザーのプロファイル (`C:\Users\<名前>`、デスクトップ・ドキュメントなど) | できない (Windows の既定) |
 | システムドライブ以外のドライブ (D:\ など)、`C:\` 直下の独自フォルダ、`C:\Users\Public` | できない (`jfs protect` で拒否を設定) |
 | `C:\Windows`, `C:\Program Files` など OS・アプリ | 読み取りのみ (Python・Git を動かすために必要) |
 | インターネット・LAN | 使える (pip / git のため) |
 
 - 禁止するフォルダは `servers.json` の `defaults.protectedPaths` で変更できます。`"auto"` は上の表の自動選択で、
-  `["auto", "C:\\Users\\Public"]` のようにパスを追加できます。変更したら `jfs protect` を実行してください。
+  `["auto", "C:\\data"]` のようにパスを追加できます。変更したら `jfs protect` を実行してください。
   (後から作ったドライブやフォルダも `jfs protect` を再実行すると対象になります)
+- このリポジトリを含む `C:\` 直下のフォルダ (例: `C:\tools\jupyter-for-share` の `C:\tools`) は、自動選択の対象から外れます。
+  リポジトリは `C:\jupyter-for-share` のように専用の場所に置くのがおすすめです。
 - ドライブ全体へのアクセス権設定は、ファイル数が多いと数分〜数十分かかることがあります。
-- 1 つのサーバーを複数人で使う場合、その人たちの間ではファイルが共有されます。人ごとに分けたいときはサーバーを分けてください。
 - 通信は HTTP (暗号化なし) です。信頼できる LAN 内で使い、インターネットには公開しないでください。
   ファイアウォールは既定で同じサブネット (`LocalSubnet`) からの接続だけを許可します。
+- セットアップ後、このリポジトリのフォルダは管理者だけが読み書きできます。`git pull` などは管理者として実行してください。
 
 ## 設定ファイル (servers.json)
 
@@ -171,28 +201,30 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 
 | キー | 既定値 | 内容 |
 | --- | --- | --- |
-| `instancesRoot` | `C:\JupyterShare` | サーバーフォルダを作る場所 |
-| `python` | (自動検出) | 使う Python (全ユーザー向けにインストールされたもの) |
-| `domain` | (なし) | URL に表示するドメイン名 |
-| `portStart` | `8888` | ポート省略時に探し始める番号 |
-| `bindAddress` | `0.0.0.0` | 待ち受けるアドレス |
-| `allowFrom` | `["LocalSubnet"]` | ファイアウォールで接続を許可する相手 (サーバーごとに `-AllowFrom` で上書き可) |
-| `firewallProfiles` | `Domain,Private` | ファイアウォール規則を有効にするネットワークの種類 |
-| `labLocale` | `ja_JP` | JupyterLab の表示言語 (`en` で英語) |
-| `extraServerPackages` | `[]` | JupyterLab 側に追加する拡張機能など (例: `"jupyterlab-git"`) |
-| `venvPackages` | `[]` | 新しく作る venv に最初から入れるパッケージ |
-| `protectedPaths` | `["auto"]` | アクセスを禁止するフォルダ |
+| `defaults.instancesRoot` | (空 = このリポジトリの `user`) | ユーザー環境を作る場所 |
+| `defaults.python` | (自動検出) | 使う Python (全ユーザー向けにインストールされたもの) |
+| `defaults.domain` | (なし) | URL に表示するドメイン名 |
+| `defaults.portRange` | `[20000, 29999]` | ユーザー環境のポートをランダムに選ぶ範囲 |
+| `defaults.bindAddress` | `0.0.0.0` | 待ち受けるアドレス |
+| `defaults.allowFrom` | `["LocalSubnet"]` | ファイアウォールで接続を許可する相手 |
+| `defaults.firewallProfiles` | `Domain,Private` | ファイアウォール規則を有効にするネットワークの種類 |
+| `defaults.labLocale` | `ja_JP` | JupyterLab の表示言語 (`en` で英語) |
+| `defaults.extraServerPackages` | `[]` | JupyterLab 側に追加する拡張機能など (例: `"jupyterlab-git"`) |
+| `defaults.venvPackages` | `[]` | 新しく作る venv に最初から入れるパッケージ |
+| `defaults.protectedPaths` | `["auto"]` | アクセスを禁止するフォルダ |
+| `monitor.port` | `8000` | リソースモニターのポート (`jfs monitor -Port` で変更) |
 
 ## トラブルシューティング
 
 - **別の PC からつながらない**
-  - `jfs list` で「起動中」になっているか確認。なっていなければ `jfs logs <名前>` でエラーを確認
+  - `jfs list` で「起動中」になっているか確認。なっていなければ `jfs logs <ユーザー名>` でエラーを確認
   - サーバー PC のネットワークが「パブリック」になっていないか (setup が警告を出します)。「プライベート」に変更してください
-  - 接続元が別のサブネットの場合は `jfs set <名前> -AllowFrom 192.168.0.0/16` のように許可範囲を広げる
-  - サーバー PC 上のブラウザで `http://localhost:8888/` が開けるか確認
+  - 接続元が別のサブネットの場合は `jfs set <ユーザー名> -AllowFrom 192.168.0.0/16` のように許可範囲を広げる
+  - サーバー PC 上のブラウザで `http://localhost:<ポート>/` が開けるか確認
 - **コンピューター名でつながらない**: IP アドレスの URL を使うか、「ドメイン名でアクセスする」の 2 か 3 を設定してください
+- **GPU が表示されない**: NVIDIA の場合はドライバが入っているか (`nvidia-smi` が動くか) を確認してください。`jfs logs monitor` にエラーが出ていないかも確認できます
 - **PC のスリープでつながらなくなる**: `setup.cmd -DisableSleep` で AC 電源時のスリープを無効にできます
 - **ターミナルでスクリプト (Activate.ps1 など) が実行できない**: 実行ポリシーは RemoteSigned に設定済みです。
   インターネットから取得したスクリプトはブロックされることがあるので `Unblock-File` を使ってください
-- **全部やり直したい**: `jfs remove <名前> -DeleteFiles` で各サーバーを削除し、`jfs unprotect` でアクセス禁止を解除します。
-  グループ `jupyter-for-share-users` は「コンピューターの管理」から削除できます
+- **全部やり直したい**: `jfs remove <ユーザー名> -DeleteFiles` で各環境を削除し、`jfs monitor-stop`、`jfs unprotect` を実行します。
+  アカウント `jfsmon` とグループ `jupyter-for-share-users` は「コンピューターの管理」から削除できます

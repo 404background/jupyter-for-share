@@ -6,15 +6,17 @@
     1. Python (全ユーザー向け) と Git for Windows のインストール (winget)
     2. 設定ファイル (servers.json) の作成
     3. サーバー実行用ユーザーのグループとログオン権限の設定
-    4. サーバーフォルダの親フォルダ・C:\ProgramData\jupyter のアクセス権設定
-    5. サーバー用ユーザーから他のフォルダへのアクセス禁止 (-SkipProtect で省略)
+    4. このリポジトリ・user フォルダ・C:\ProgramData\jupyter のアクセス権設定
+    5. サーバー実行用アカウントから他のフォルダへのアクセス禁止 (-SkipProtect で省略)
+    6. リソースモニター (CPU / メモリ / GPU) の設置 (-SkipMonitor で省略)
     何度実行しても問題ありません。
 #>
 [CmdletBinding()]
 param(
-    [string]$InstancesRoot,   # サーバーフォルダを作る場所 (既定: C:\JupyterShare)
     [string]$Domain,          # 接続 URL に使うドメイン名 (例: jupyter.home.arpa)。DNS / hosts の設定は別途必要
     [switch]$SkipProtect,     # 他フォルダへのアクセス禁止を設定しない
+    [switch]$SkipMonitor,     # リソースモニターを設置しない
+    [int]$MonitorPort,        # リソースモニターのポート (既定: 8000)
     [switch]$DisableSleep,    # AC 電源時のスリープ・休止を無効にする (常時起動のサーバー向け)
     [switch]$PauseAtEnd       # 自動昇格したウィンドウが閉じないようにする (内部用)
 )
@@ -49,7 +51,6 @@ function Invoke-Setup {
 
     # ---- 設定ファイル ----
     $cfg = Read-Config
-    if ($InstancesRoot) { Set-Value $cfg.defaults 'instancesRoot' ([System.IO.Path]::GetFullPath($InstancesRoot).TrimEnd('\')) }
     if ($Domain) { Set-Value $cfg.defaults 'domain' $Domain }
     Save-Config $cfg
     Write-Ok "設定ファイル: $script:ConfigPath"
@@ -81,11 +82,19 @@ function Invoke-Setup {
     Write-Ok "ローカルグループ '$script:LocalGroup' とログオン権限を設定しました。"
     Protect-ProgramDataJupyter
     $root = Initialize-InstancesRoot $cfg
-    Write-Ok "サーバーフォルダの場所: $root"
+    Write-Ok "ユーザー環境を作る場所: $root"
 
     if (-not $SkipProtect) {
         & (Join-Path $PSScriptRoot 'jfs.ps1') protect
         if ($LASTEXITCODE -ne 0) { Write-Warn "アクセス禁止の設定に失敗しました。後で 'jfs protect' を実行してください。" }
+    }
+
+    # ---- リソースモニター ----
+    if (-not $SkipMonitor) {
+        $jfsArgs = @('monitor')
+        if ($MonitorPort) { $jfsArgs += @('-Port', $MonitorPort) }
+        & (Join-Path $PSScriptRoot 'jfs.ps1') @jfsArgs
+        if ($LASTEXITCODE -ne 0) { Write-Warn "リソースモニターの設置に失敗しました。後で 'jfs monitor' を実行してください。" }
     }
 
     # ---- ネットワーク・電源 ----
@@ -106,9 +115,9 @@ function Invoke-Setup {
     Write-Host @'
 
 次の手順:
-  1. サーバーを作成する (例: ポート 8888 で alice 用のサーバー)
-       jfs add alice -Port 8888
-  2. 表示された URL を別の PC のブラウザで開く
+  1. ユーザー環境を作成する (例: alice さん用。ポートは自動で決まります)
+       jfs add alice
+  2. 表示された URL を本人に伝え、別の PC のブラウザで開いてもらう
   3. 一覧・停止などは 'jfs help' を参照
 '@
 }

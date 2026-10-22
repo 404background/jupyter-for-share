@@ -1,9 +1,9 @@
 {
   "defaults": {
-    "instancesRoot": "C:\\JupyterShare",
+    "instancesRoot": "",
     "python": "",
     "domain": "",
-    "portStart": 8888,
+    "portRange": [20000, 29999],
     "bindAddress": "0.0.0.0",
     "allowFrom": ["LocalSubnet"],
     "firewallProfiles": "Domain,Private",
@@ -12,5 +12,9 @@
     "venvPackages": [],
     "protectedPaths": ["auto"]
   },
-  "servers": []
+  "monitor": {
+    "enabled": false,
+    "port": 8000
+  },
+  "users": []
 }

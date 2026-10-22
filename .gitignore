@@ -1,2 +1,10 @@
 # トークンを含むので共有しない
 servers.json
+
+# ユーザーごとの環境 (jfs add で作成)
+user/
+
+# リソースモニターの実行環境
+monitor/.venv/
+monitor/.runtime/
+__pycache__/

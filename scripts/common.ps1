@@ -7,6 +7,8 @@ $script:FirewallGroup     = 'jupyter-for-share'
 $script:LocalGroup        = 'jupyter-for-share-users'
 $script:TaskPath          = '\jupyter-for-share\'
 $script:UserPrefix        = 'jfs-'
+$script:MonitorAccount    = 'jfsmon'
+$script:MonitorDir        = Join-Path $script:RepoRoot 'monitor'
 
 # よく使う SID (Windows の表示言語に関係なく使える)
 $script:SidSystem = 'S-1-5-18'
@@ -91,17 +93,27 @@ function Read-Config {
     }
     $cfg = Get-Content -LiteralPath $script:ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($null -eq (Get-Value $cfg 'defaults')) { Set-Value $cfg 'defaults' ([pscustomobject]@{}) }
-    Set-Value $cfg 'servers' @(@(Get-Value $cfg 'servers' @()) | Where-Object { $null -ne $_ })
+    Set-Value $cfg 'users' @(@(Get-Value $cfg 'users' @()) | Where-Object { $null -ne $_ })
+    if ($null -eq (Get-Value $cfg 'monitor')) { Set-Value $cfg 'monitor' ([pscustomobject]@{ enabled = $false; port = 8000 }) }
     return $cfg
 }
 
 function Save-Config($Config) {
     $Config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
+    # リソースモニターに、ユーザー名とポートだけ (トークンは含めない) を渡す
+    $runtime = Join-Path $script:MonitorDir '.runtime'
+    if (Test-Path -LiteralPath $runtime) {
+        $list = @($Config.users | ForEach-Object { [pscustomobject]@{ name = $_.name; port = [int]$_.port } })
+        $json = ConvertTo-Json -InputObject @{ users = $list } -Depth 5
+        [System.IO.File]::WriteAllText((Join-Path $runtime 'users.json'), $json, (New-Object System.Text.UTF8Encoding($false)))
+    }
 }
 
+# ユーザーごとの環境を作る場所 (既定: このリポジトリの user フォルダ)
 function Get-InstancesRoot($Config) {
-    $root = [System.IO.Path]::GetFullPath([string](Get-Value $Config.defaults 'instancesRoot' 'C:\JupyterShare'))
-    return $root.TrimEnd('\')
+    $root = [string](Get-Value $Config.defaults 'instancesRoot' '')
+    if (-not $root) { $root = Join-Path $script:RepoRoot 'user' }
+    return [System.IO.Path]::GetFullPath($root).TrimEnd('\')
 }
 
 # ---- Python ----
@@ -216,8 +228,18 @@ function Protect-ProgramDataJupyter {
         "*$($script:SidSystem):(OI)(CI)F", "*$($script:SidAdmins):(OI)(CI)F", "*$($script:SidUsers):(OI)(CI)RX", '/Q') -Quiet
 }
 
-# サーバーフォルダの親フォルダ: 管理者だけがフル権限。サーバー用ユーザーはこのフォルダ自体の参照のみ
+# リポジトリのフォルダ: 管理者だけが読み書きできるようにする。
+# (スクリプトは管理者権限で実行され、servers.json にはトークンがあるため、サーバー用ユーザーに触らせない)
+# サーバー用ユーザーは user / monitor フォルダへたどり着くために、このフォルダ自体の参照だけ許可する。
+function Protect-RepoFolder {
+    Invoke-Native 'icacls.exe' @($script:RepoRoot, '/inheritance:r', '/grant:r',
+        "*$($script:SidSystem):(OI)(CI)F", "*$($script:SidAdmins):(OI)(CI)F",
+        "*$(Get-CurrentUserSid):(OI)(CI)F", "*$(Get-LocalGroupSid):(RX)", '/Q') -Quiet
+}
+
+# ユーザー環境の親フォルダ: 管理者だけがフル権限。サーバー用ユーザーはこのフォルダ自体の参照のみ
 function Initialize-InstancesRoot($Config) {
+    Protect-RepoFolder
     $root = Get-InstancesRoot $Config
     if ($root.Length -le 3) { throw "instancesRoot にドライブ直下 ($root) は指定できません。" }
     if (-not (Test-Path -LiteralPath $root)) { New-Item -ItemType Directory -Path $root -Force | Out-Null }

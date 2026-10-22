@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>サーバーリソース</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #e3e6eb;
+    --track: #edf0f4; --cpu: #2f6fe4; --mem: #11946b; --gpu: #c2410c; --disk: #7c3aed;
+    --warn: #d97706; --bad: #dc2626; --ok: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b1f27; --text: #e6e9ef; --muted: #9aa3b2; --line: #2a303b;
+      --track: #262c36; --cpu: #6b9cff; --mem: #34c49a; --gpu: #ff8a4c; --disk: #a98bff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 "Segoe UI", "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  header { padding: 16px 20px 4px; display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; }
+  h1 { font-size: 20px; margin: 0; }
+  .meta { color: var(--muted); font-size: 13px; }
+  main { padding: 12px 20px 24px; display: grid; gap: 16px; align-items: start;
+         grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card h2 { margin: 0 0 6px; font-size: 14px; color: var(--muted); font-weight: 600; }
+  .big { font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .sub { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .bar { height: 8px; background: var(--track); border-radius: 4px; overflow: hidden; margin: 8px 0; }
+  .bar > div { height: 100%; border-radius: 4px; transition: width .4s; }
+  canvas { width: 100%; height: 70px; display: block; margin-top: 6px; }
+  .cores { display: grid; grid-template-columns: repeat(auto-fill, minmax(18px, 1fr)); gap: 3px; margin-top: 8px; }
+  .core { height: 26px; background: var(--track); border-radius: 3px; position: relative; overflow: hidden; }
+  .core > div { position: absolute; bottom: 0; left: 0; right: 0; background: var(--cpu); }
+  .gpu + .gpu { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .gpu-name { font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 6px 4px; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  tr:first-child td { border-top: none; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  a { color: var(--cpu); }
+  .empty { color: var(--muted); }
+  .error { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>サーバーリソース</h1>
+  <span class="meta" id="host">接続中...</span>
+</header>
+<main>
+  <section class="card">
+    <h2>CPU</h2>
+    <div class="big" id="cpu-val">-</div>
+    <div class="sub" id="cpu-sub"></div>
+    <div class="bar"><div id="cpu-bar" style="background: var(--cpu)"></div></div>
+    <canvas id="cpu-chart"></canvas>
+    <div class="cores" id="cores"></div>
+  </section>
+  <section class="card">
+    <h2>メモリ</h2>
+    <div class="big" id="mem-val">-</div>
+    <div class="sub" id="mem-sub"></div>
+    <div class="bar"><div id="mem-bar" style="background: var(--mem)"></div></div>
+    <canvas id="mem-chart"></canvas>
+  </section>
+  <section class="card">
+    <h2>GPU</h2>
+    <div id="gpus"><span class="empty">-</span></div>
+  </section>
+  <section class="card">
+    <h2>ディスク</h2>
+    <div class="big" id="disk-val">-</div>
+    <div class="sub" id="disk-sub"></div>
+    <div class="bar"><div id="disk-bar" style="background: var(--disk)"></div></div>
+    <h2 style="margin-top: 16px">ユーザー環境</h2>
+    <table id="users"></table>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const pct = (v) => (v === null || v === undefined) ? '-' : v.toFixed(0) + '%';
+function bytes(n) {
+  if (n === null || n === undefined) return '-';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i >= 3 ? 1 : 0) + ' ' + u[i];
+}
+function duration(s) {
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return (d ? d + '日 ' : '') + h + '時間 ' + m + '分';
+}
+function levelColor(v, base) {
+  if (v >= 90) return css('--bad');
+  if (v >= 75) return css('--warn');
+  return css(base);
+}
+function setBar(id, v, base) {
+  const el = $(id);
+  el.style.width = Math.max(0, Math.min(100, v || 0)) + '%';
+  el.style.background = levelColor(v || 0, base);
+}
+function chart(canvas, values, color) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const c = canvas.getContext('2d');
+  c.scale(dpr, dpr);
+  c.strokeStyle = css('--line'); c.lineWidth = 1;
+  for (const y of [0.25, 0.5, 0.75]) { c.beginPath(); c.moveTo(0, h * y); c.lineTo(w, h * y); c.stroke(); }
+  const pts = values.map((v, i) => [values.length > 1 ? i / (values.length - 1) * w : w, h - (v || 0) / 100 * h]);
+  if (pts.length < 2) return;
+  c.beginPath(); pts.forEach(([x, y], i) => i ? c.lineTo(x, y) : c.moveTo(x, y));
+  c.strokeStyle = color; c.lineWidth = 1.5; c.stroke();
+  c.lineTo(w, h); c.lineTo(pts[0][0], h); c.closePath();
+  c.globalAlpha = 0.15; c.fillStyle = color; c.fill(); c.globalAlpha = 1;
+}
+
+let latest = null;
+function render(d) {
+  latest = d;
+  if (d.error) { $('host').innerHTML = '<span class="error">' + esc(d.error) + '</span>'; return; }
+  const hist = d.history || [];
+  $('host').textContent = d.hostname + ' / 起動から ' + duration(d.uptime) + ' / ' +
+                          new Date(d.time * 1000).toLocaleTimeString();
+
+  $('cpu-val').textContent = pct(d.cpu.percent);
+  $('cpu-sub').textContent = d.cpu.cores + ' コア / ' + d.cpu.threads + ' スレッド';
+  setBar('cpu-bar', d.cpu.percent, '--cpu');
+  chart($('cpu-chart'), hist.map(p => p.cpu), css('--cpu'));
+  $('cores').innerHTML = d.cpu.per_core.map((v, i) =>
+    '<div class="core" title="#' + i + ': ' + v.toFixed(0) + '%"><div style="height:' + v + '%"></div></div>').join('');
+
+  $('mem-val').textContent = pct(d.memory.percent);
+  $('mem-sub').textContent = bytes(d.memory.used) + ' / ' + bytes(d.memory.total);
+  setBar('mem-bar', d.memory.percent, '--mem');
+  chart($('mem-chart'), hist.map(p => p.mem), css('--mem'));
+
+  if (!d.gpus.length) {
+    $('gpus').innerHTML = '<span class="empty">' + (d.gpu_error ? '取得エラー: ' + esc(d.gpu_error) : 'GPU 情報を取得できません') + '</span>';
+  } else {
+    $('gpus').innerHTML = d.gpus.map((g, i) => {
+      const memPct = g.mem_total ? g.mem_used / g.mem_total * 100 : null;
+      const extra = [g.temp !== null ? g.temp.toFixed(0) + '℃' : null,
+                     g.power !== null ? g.power.toFixed(0) + ' W' : null].filter(Boolean).join(' / ');
+      return '<div class="gpu"><div class="gpu-name">' + esc(g.name) + '</div>' +
+        '<div class="big">' + pct(g.util) + '</div>' +
+        '<div class="bar"><div id="gpu-bar-' + i + '"></div></div>' +
+        '<div class="sub">メモリ ' + bytes(g.mem_used) + (g.mem_total ? ' / ' + bytes(g.mem_total) + ' (' + pct(memPct) + ')' : '') +
+        (extra ? ' / ' + extra : '') + '</div>' +
+        (memPct !== null ? '<div class="bar"><div id="gpu-mem-' + i + '"></div></div>' : '') +
+        '<canvas id="gpu-chart-' + i + '"></canvas></div>';
+    }).join('') + '<div class="sub" style="margin-top:8px">取得元: ' + esc(d.gpu_source) + '</div>';
+    d.gpus.forEach((g, i) => {
+      setBar('gpu-bar-' + i, g.util, '--gpu');
+      if (g.mem_total) setBar('gpu-mem-' + i, g.mem_used / g.mem_total * 100, '--gpu');
+      chart($('gpu-chart-' + i), hist.map(p => (p.gpu || [])[i]), css('--gpu'));
+    });
+  }
+
+  if (d.disk) {
+    $('disk-val').textContent = pct(d.disk.percent);
+    $('disk-sub').textContent = bytes(d.disk.used) + ' / ' + bytes(d.disk.total) + ' (' + esc(d.disk.path) + ')';
+    setBar('disk-bar', d.disk.percent, '--disk');
+  }
+
+  $('users').innerHTML = d.users.length ? d.users.map(u => {
+    const url = location.protocol + '//' + location.hostname + ':' + u.port + '/lab';
+    return '<tr><td><span class="dot" style="background:' + (u.running ? css('--ok') : css('--muted')) + '"></span>' +
+      esc(u.name) + '</td><td>' + (u.running ? '起動中' : '停止') + '</td>' +
+      '<td style="text-align:right"><a href="' + url + '">:' + u.port + '</a></td></tr>';
+  }).join('') : '<tr><td class="empty">ユーザー環境はまだありません</td></tr>';
+}
+
+async function update() {
+  try {
+    const r = await fetch('api/stats', { cache: 'no-store' });
+    render(await r.json());
+  } catch (e) {
+    $('host').innerHTML = '<span class="error">サーバーに接続できません</span>';
+  }
+}
+update();
+setInterval(update, 2000);
+window.addEventListener('resize', () => latest && render(latest));
+</script>
+</body>
+</html>
