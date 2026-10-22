@@ -8,3 +8,6 @@ user/
 monitor/.venv/
 monitor/.runtime/
 __pycache__/
+
+# 実行時の状態 (アクセス禁止の処理状況など)
+.runtime/

@@ -232,6 +232,12 @@ function Protect-ProgramDataJupyter {
 # (スクリプトは管理者権限で実行され、servers.json にはトークンがあるため、サーバー用ユーザーに触らせない)
 # サーバー用ユーザーは user / monitor フォルダへたどり着くために、このフォルダ自体の参照だけ許可する。
 function Protect-RepoFolder {
+    # 設定済みなら何もしない (付け直すとリポジトリ内の全ファイルを書き換えるため)
+    $acl = Get-Acl -LiteralPath $script:RepoRoot
+    $groupSid = Get-LocalGroupSid
+    $hasGroup = @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) |
+        Where-Object { $_.IdentityReference.Value -eq $groupSid }).Count -gt 0
+    if ($acl.AreAccessRulesProtected -and $hasGroup) { return }
     Invoke-Native 'icacls.exe' @($script:RepoRoot, '/inheritance:r', '/grant:r',
         "*$($script:SidSystem):(OI)(CI)F", "*$($script:SidAdmins):(OI)(CI)F",
         "*$(Get-CurrentUserSid):(OI)(CI)F", "*$(Get-LocalGroupSid):(RX)", '/Q') -Quiet

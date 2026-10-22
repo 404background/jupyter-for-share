@@ -85,7 +85,7 @@ function Invoke-Setup {
     Write-Ok "ユーザー環境を作る場所: $root"
 
     if (-not $SkipProtect) {
-        & (Join-Path $PSScriptRoot 'jfs.ps1') protect
+        & (Join-Path $PSScriptRoot 'jfs.ps1') protect -Background
         if ($LASTEXITCODE -ne 0) { Write-Warn "アクセス禁止の設定に失敗しました。後で 'jfs protect' を実行してください。" }
     }
 

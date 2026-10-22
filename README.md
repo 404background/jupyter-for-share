@@ -69,7 +69,7 @@ setup で行うこと:
 | 設定ファイル作成 | `servers.json` (`servers.example.json` をコピー) |
 | サーバー実行用グループ | `jupyter-for-share-users` を作成し、ログオン権限を設定 |
 | フォルダのアクセス権 | このリポジトリ・`user` フォルダ・`C:\ProgramData\jupyter` を管理者以外が変更できないようにする |
-| 他フォルダへのアクセス禁止 | 後述の「アクセス制限」(`-SkipProtect` で省略可) |
+| 他フォルダへのアクセス禁止 | 後述の「アクセス制限」。バックグラウンドで実行されるので setup はすぐ終わります (`-SkipProtect` で省略可) |
 | リソースモニター | ポート 8000 で起動 (`-MonitorPort 9000` で変更、`-SkipMonitor` で省略可) |
 
 ## ユーザー環境を作る・管理する
@@ -98,7 +98,9 @@ jfs add alice
 | `jfs monitor [-Port 8000]` | リソースモニターを設置・更新して起動 |
 | `jfs monitor-stop` | リソースモニターを停止 |
 | `jfs firewall` | ファイアウォール規則を作り直す |
-| `jfs protect / unprotect` | 他フォルダへのアクセス禁止を設定 / 解除 |
+| `jfs protect [-Background]` | 他フォルダへのアクセス禁止を設定 (設定済みの場所は飛ばす。`-Force` で付け直し) |
+| `jfs protect -Status` | アクセス禁止の設定状況 (バックグラウンド処理の進み具合) |
+| `jfs unprotect` | アクセス禁止を解除 |
 
 ## 別の PC から接続する
 
@@ -190,7 +192,15 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
   (後から作ったドライブやフォルダも `jfs protect` を再実行すると対象になります)
 - このリポジトリを含む `C:\` 直下のフォルダ (例: `C:\tools\jupyter-for-share` の `C:\tools`) は、自動選択の対象から外れます。
   リポジトリは `C:\jupyter-for-share` のように専用の場所に置くのがおすすめです。
-- ドライブ全体へのアクセス権設定は、ファイル数が多いと数分〜数十分かかることがあります。
+- **処理時間について**: Windows のアクセス権 (NTFS) は、フォルダに付けた設定が中のファイル 1 つ 1 つにコピーされる仕組みのため、
+  初回はドライブ内のファイル数に比例して時間がかかります (数分〜数十分)。次の工夫で待ち時間を減らしています。
+  - setup ではバックグラウンドで実行し、すぐに次の作業 (`jfs add` など) に進めます。進み具合は `jfs protect -Status` で確認できます
+  - 複数のドライブ・フォルダを並列に処理します
+  - 2 回目以降は、設定済みの場所を飛ばします (新しく作られたファイルには自動で引き継がれるので付け直し不要)
+- 「許可した場所以外をすべて禁止する」方式 (ホワイトリスト) も検討しましたが、Windows では
+  サーバー実行用アカウントが「Authenticated Users」などの標準グループに必ず含まれ、多くのフォルダがそのグループに読み取りを許可しているため、
+  アクセス権だけで実現するには結局それらのフォルダ側に拒否を付ける必要があり、速くなりません。
+  (AppContainer などのサンドボックスを使えば可能ですが、Python・pip・git・ターミナルの動作に制約が出るため採用していません)
 - 通信は HTTP (暗号化なし) です。信頼できる LAN 内で使い、インターネットには公開しないでください。
   ファイアウォールは既定で同じサブネット (`LocalSubnet`) からの接続だけを許可します。
 - セットアップ後、このリポジトリのフォルダは管理者だけが読み書きできます。`git pull` などは管理者として実行してください。
@@ -214,6 +224,21 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 | `defaults.protectedPaths` | `["auto"]` | アクセスを禁止するフォルダ |
 | `monitor.port` | `8000` | リソースモニターのポート (`jfs monitor -Port` で変更) |
 
+## ライセンス
+
+このリポジトリのスクリプト・ドキュメントは [MIT License](LICENSE) で公開しています。
+
+セットアップ時に次のソフトウェアをインターネットからインストールしますが、このリポジトリには含まれていません。
+それぞれのライセンスに従って利用してください。
+
+| ソフトウェア | ライセンス | 用途 |
+| --- | --- | --- |
+| [Python](https://www.python.org/) | PSF License | 実行環境 |
+| [Git for Windows](https://gitforwindows.org/) | GPL v2 | git clone など |
+| [JupyterLab](https://github.com/jupyterlab/jupyterlab) / [ipykernel](https://github.com/ipython/ipykernel) | BSD 3-Clause | ノートブック・ターミナル |
+| [jupyterlab-language-pack-ja-JP](https://github.com/jupyterlab/language-packs) | BSD 3-Clause | 日本語表示 |
+| [psutil](https://github.com/giampaolo/psutil) | BSD 3-Clause | リソースモニター |
+
 ## トラブルシューティング
 
 - **別の PC からつながらない**
@@ -226,5 +251,6 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 - **PC のスリープでつながらなくなる**: `setup.cmd -DisableSleep` で AC 電源時のスリープを無効にできます
 - **ターミナルでスクリプト (Activate.ps1 など) が実行できない**: 実行ポリシーは RemoteSigned に設定済みです。
   インターネットから取得したスクリプトはブロックされることがあるので `Unblock-File` を使ってください
+- **アクセス禁止の設定が終わったか知りたい**: `jfs protect -Status` で、実行中かどうか・設定済みの場所・ログの末尾が表示されます
 - **全部やり直したい**: `jfs remove <ユーザー名> -DeleteFiles` で各環境を削除し、`jfs monitor-stop`、`jfs unprotect` を実行します。
   アカウント `jfsmon` とグループ `jupyter-for-share-users` は「コンピューターの管理」から削除できます

@@ -24,6 +24,9 @@ param(
     [switch]$DeleteFiles,
     [switch]$Follow,
     [switch]$Force,
+    [switch]$Background,
+    [switch]$Status,
+    [string]$LogFile,
     [switch]$PauseAtEnd
 )
 
@@ -54,7 +57,10 @@ jupyter-for-share 管理コマンド (管理者権限で実行)
   monitor-stop                   リソースモニターを停止
 
   firewall                       Windows ファイアウォール規則を設定ファイルに合わせて更新
-  protect / unprotect            サーバー用ユーザーから他のフォルダへのアクセス禁止を設定 / 解除
+  protect [-Background] [-Force] サーバー実行用アカウントから他のフォルダへのアクセスを禁止
+                                 (設定済みの場所は飛ばす。-Background で裏で実行、-Force で付け直し)
+  protect -Status                アクセス禁止の設定状況
+  unprotect                      アクセス禁止を解除
 '@
 }
 
@@ -595,38 +601,155 @@ function Get-ProtectTargets($Config) {
     return @($targets | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -Unique)
 }
 
-function Protect-Folders($Config) {
-    $sid = Get-LocalGroupSid
-    $targets = Get-ProtectTargets $Config
-    if ($targets.Count -eq 0) { Write-Info 'アクセス禁止の対象フォルダはありません。'; return }
-    Write-Info 'サーバー実行用アカウントから次のフォルダへのアクセスを禁止します (ファイル数が多いと時間がかかります):'
-    $targets | ForEach-Object { Write-Host "    $_" }
-    $applied = @(Get-Value $Config 'protectedApplied' @())
-    foreach ($t in $targets) {
-        try {
-            Invoke-Native 'icacls.exe' @($t, '/deny', "*$($sid):(OI)(CI)F", '/Q', '/C') -Quiet
-            if ($applied -notcontains $t) { $applied += $t }
-        } catch {
-            Write-Warn "$t : $($_.Exception.Message)"
+# 設定済みの対象は .runtime\protected.json に記録する (servers.json とは別にして、
+# バックグラウンド実行中に jfs add などで設定ファイルを書き換えても競合しないようにする)
+function Get-ProtectStatePaths {
+    $dir = Join-Path $script:RepoRoot '.runtime'
+    return [pscustomobject]@{
+        Dir     = $dir
+        Applied = Join-Path $dir 'protected.json'
+        Job     = Join-Path $dir 'protect-job.json'
+        Log     = Join-Path $dir 'protect.log'
+    }
+}
+
+function Get-ProtectedApplied($Config) {
+    $list = @(Get-Value $Config 'protectedApplied' @())   # 旧バージョンの記録
+    $f = (Get-ProtectStatePaths).Applied
+    if (Test-Path -LiteralPath $f) {
+        # PowerShell 5.1 の ConvertFrom-Json は配列を 1 つのオブジェクトとして返すので foreach で展開する
+        $data = Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($x in $data) { $list += [string]$x }
+    }
+    return @($list | Where-Object { $_ } | Select-Object -Unique)
+}
+
+function Save-ProtectedApplied([string[]]$List) {
+    $st = Get-ProtectStatePaths
+    if (-not (Test-Path -LiteralPath $st.Dir)) { New-Item -ItemType Directory -Path $st.Dir -Force | Out-Null }
+    $json = ConvertTo-Json -InputObject @($List | Where-Object { $_ }) -Depth 3
+    [System.IO.File]::WriteAllText($st.Applied, $json, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+# フォルダ自体に、グループへの「拒否」が既に付いているか (付いていれば中のファイルにも継承済み)
+function Test-HasDeny([string]$Path, [string]$Sid) {
+    try {
+        $acl = Get-Acl -LiteralPath $Path
+        foreach ($r in $acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])) {
+            if ($r.AccessControlType -eq 'Deny' -and $r.IdentityReference.Value -eq $Sid) { return $true }
+        }
+    } catch { }
+    return $false
+}
+
+# icacls をフォルダごとに並列で実行し、終わるまで経過を表示する
+function Invoke-IcaclsParallel([string[]]$Targets, [string[]]$IcaclsArgs) {
+    $jobs = @()
+    foreach ($t in $Targets) {
+        # "D:\" のように \ で終わるパスは、引用符の直前の \ がエスケープ扱いされるので \ を重ねる
+        $quoted = $t
+        if ($quoted.EndsWith('\')) { $quoted += '\' }
+        $out = [System.IO.Path]::GetTempFileName()
+        $proc = Start-Process -FilePath 'icacls.exe' -ArgumentList (@("`"$quoted`"") + $IcaclsArgs) `
+            -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+        $null = $proc.Handle   # 終了コードを後で取得するために必要
+        $jobs += [pscustomobject]@{ Target = $t; Proc = $proc; Out = $out }
+    }
+    $started = Get-Date
+    $lastReport = $started
+    while (@($jobs | Where-Object { -not $_.Proc.HasExited }).Count -gt 0) {
+        Start-Sleep -Seconds 2
+        if (((Get-Date) - $lastReport).TotalSeconds -ge 30) {
+            $lastReport = Get-Date
+            $running = @($jobs | Where-Object { -not $_.Proc.HasExited } | ForEach-Object { $_.Target })
+            Write-Info ("処理中 ({0} 分経過): {1}" -f [int]((Get-Date) - $started).TotalMinutes, ($running -join ', '))
         }
     }
-    Set-Value $Config 'protectedApplied' $applied
-    Save-Config $Config
+    foreach ($j in $jobs) {
+        $j.Proc.WaitForExit()
+        if ($j.Proc.ExitCode -ne 0) {
+            # /C 指定なので、一部のファイルで失敗しても残りは処理されている
+            $msg = (Get-Content -LiteralPath $j.Out, "$($j.Out).err" -ErrorAction SilentlyContinue | Select-Object -Last 3) -join ' / '
+            Write-Warn "$($j.Target): 一部のファイルを処理できませんでした ($msg)"
+        }
+        Remove-Item -LiteralPath $j.Out, "$($j.Out).err" -ErrorAction SilentlyContinue
+    }
+}
+
+function Protect-Folders($Config, [switch]$Reapply) {
+    $sid = Get-LocalGroupSid
+    $targets = @(Get-ProtectTargets $Config)
+    $applied = @(Get-ProtectedApplied $Config)
+    # 既に拒否が付いているフォルダは飛ばす (付け直すと中の全ファイルを書き換えるため時間がかかる)
+    $todo = @($targets | Where-Object { $Reapply -or -not (Test-HasDeny $_ $sid) })
+    foreach ($t in $targets) { if ($todo -notcontains $t -and $applied -notcontains $t) { $applied += $t } }
+
+    if ($todo.Count -eq 0) {
+        Save-ProtectedApplied $applied
+        Write-Ok "アクセス禁止は設定済みです (対象 $($targets.Count) か所)。"
+        return
+    }
+    Write-Info 'サーバー実行用アカウントから次のフォルダへのアクセスを禁止します。'
+    Write-Info '中のファイル数が多いと時間がかかります (初回のみ。2 回目以降は設定済みの場所を飛ばします):'
+    $todo | ForEach-Object { Write-Host "    $_" }
+    Invoke-IcaclsParallel $todo @('/deny', "*$($sid):(OI)(CI)F", '/Q', '/C')
+
+    foreach ($t in $todo) {
+        if (Test-HasDeny $t $sid) {
+            if ($applied -notcontains $t) { $applied += $t }
+        } else {
+            Write-Warn "$t : アクセス禁止を設定できませんでした。"
+        }
+    }
+    Save-ProtectedApplied $applied
     Write-Ok 'アクセス禁止を設定しました。'
 }
 
 function Unprotect-Folders($Config) {
     $sid = Get-LocalGroupSid
-    foreach ($t in @(Get-Value $Config 'protectedApplied' @())) {
-        if (Test-Path -LiteralPath $t) {
-            try {
-                Invoke-Native 'icacls.exe' @($t, '/remove:d', "*$sid", '/Q', '/C') -Quiet
-                Write-Ok "解除: $t"
-            } catch { Write-Warn "$t : $($_.Exception.Message)" }
-        }
+    $targets = @(Get-ProtectedApplied $Config | Where-Object { Test-Path -LiteralPath $_ })
+    if ($targets.Count -gt 0) {
+        Write-Info "アクセス禁止を解除しています: $($targets -join ', ')"
+        Invoke-IcaclsParallel $targets @('/remove:d', "*$sid", '/Q', '/C')
     }
-    Set-Value $Config 'protectedApplied' @()
-    Save-Config $Config
+    Save-ProtectedApplied @()
+    if ($Config.PSObject.Properties['protectedApplied']) { Remove-Value $Config 'protectedApplied'; Save-Config $Config }
+    Write-Ok 'アクセス禁止を解除しました。'
+}
+
+# バックグラウンドで protect を実行する (setup の待ち時間をなくすため)
+function Start-ProtectBackground {
+    $st = Get-ProtectStatePaths
+    if (-not (Test-Path -LiteralPath $st.Dir)) { New-Item -ItemType Directory -Path $st.Dir -Force | Out-Null }
+    if ((Get-ProtectJobState) -eq 'running') { Write-Info 'アクセス禁止の設定は既にバックグラウンドで実行中です。'; return }
+    $proc = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", 'protect', '-LogFile', "`"$($st.Log)`"")
+    $job = @{ pid = $proc.Id; started = (Get-Date).ToString('o') }
+    [System.IO.File]::WriteAllText($st.Job, (ConvertTo-Json $job), (New-Object System.Text.UTF8Encoding($false)))
+    Write-Ok "アクセス禁止の設定をバックグラウンドで開始しました。進み具合は 'jfs protect -Status' で確認できます。"
+}
+
+function Get-ProtectJobState {
+    $st = Get-ProtectStatePaths
+    if (-not (Test-Path -LiteralPath $st.Job)) { return 'none' }
+    $job = Get-Content -LiteralPath $st.Job -Raw -Encoding UTF8 | ConvertFrom-Json
+    $p = Get-Process -Id ([int]$job.pid) -ErrorAction SilentlyContinue
+    if ($p -and $p.ProcessName -eq 'powershell' -and $p.StartTime -ge ([datetime]$job.started).AddSeconds(-5)) { return 'running' }
+    return 'finished'
+}
+
+function Show-ProtectStatus($Config) {
+    $st = Get-ProtectStatePaths
+    switch (Get-ProtectJobState) {
+        'running'  { Write-Info 'アクセス禁止の設定: バックグラウンドで実行中' }
+        'finished' { Write-Info 'アクセス禁止の設定: バックグラウンド処理は終了しています' }
+    }
+    $applied = @(Get-ProtectedApplied $Config)
+    if ($applied.Count -gt 0) { Write-Host "  設定済み: $($applied -join ', ')" } else { Write-Host '  設定済みの場所はありません。' }
+    if (Test-Path -LiteralPath $st.Log) {
+        Write-Host "  ログ ($($st.Log)) の末尾:"
+        Get-Content -LiteralPath $st.Log -Tail 8 -Encoding UTF8 | ForEach-Object { Write-Host "    $_" }
+    }
 }
 
 # ---- メイン ----
@@ -657,6 +780,7 @@ try {
             if ($rows.Count -gt 0) { $rows | Format-Table -AutoSize | Out-Host }
             else { Write-Info "ユーザー環境はまだありません。'jfs add <ユーザー名>' で作成してください。" }
             Write-Host "リソースモニター: ポート $($cfg.monitor.port) / $(Get-TaskStatus 'jfs-monitor' ([int]$cfg.monitor.port))"
+            if ((Get-ProtectJobState) -eq 'running') { Write-Host "アクセス禁止の設定: バックグラウンドで実行中 ('jfs protect -Status' で確認)" }
         }
 
         'add' {
@@ -836,8 +960,12 @@ try {
 
         'protect' {
             $cfg = Read-Config
+            if ($Status) { Show-ProtectStatus $cfg; break }
             Initialize-LocalGroup
-            Protect-Folders $cfg
+            if ($Background) { Start-ProtectBackground; break }
+            if ($LogFile) { Start-Transcript -LiteralPath $LogFile -Force | Out-Null }
+            try { Protect-Folders $cfg -Reapply:$Force }
+            finally { if ($LogFile) { Stop-Transcript | Out-Null } }
         }
 
         'unprotect' {
