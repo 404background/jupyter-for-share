@@ -86,7 +86,7 @@ function Invoke-Setup {
 
     if (-not $SkipProtect) {
         & (Join-Path $PSScriptRoot 'jfs.ps1') protect -Background
-        if ($LASTEXITCODE -ne 0) { Write-Warn "アクセス禁止の設定に失敗しました。後で 'jfs protect' を実行してください。" }
+        if ($LASTEXITCODE -ne 0) { Write-Warn "アクセス禁止の設定に失敗しました。後で 'jfs.cmd protect' を実行してください。" }
     }
 
     # ---- リソースモニター ----
@@ -94,7 +94,7 @@ function Invoke-Setup {
         $jfsArgs = @('monitor')
         if ($MonitorPort) { $jfsArgs += @('-Port', $MonitorPort) }
         & (Join-Path $PSScriptRoot 'jfs.ps1') @jfsArgs
-        if ($LASTEXITCODE -ne 0) { Write-Warn "リソースモニターの設置に失敗しました。後で 'jfs monitor' を実行してください。" }
+        if ($LASTEXITCODE -ne 0) { Write-Warn "リソースモニターの設置に失敗しました。後で 'jfs.cmd monitor' を実行してください。" }
     }
 
     # ---- ネットワーク・電源 ----
@@ -116,9 +116,9 @@ function Invoke-Setup {
 
 次の手順:
   1. ユーザー環境を作成する (例: alice さん用。ポートは自動で決まります)
-       jfs add alice
+       jfs.cmd add alice
   2. 表示された URL を本人に伝え、別の PC のブラウザで開いてもらう
-  3. 一覧・停止などは 'jfs help' を参照
+  3. 一覧・停止などは 'jfs.cmd help' を参照
 '@
 }
 

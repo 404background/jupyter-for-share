@@ -2,7 +2,7 @@
 
 Windows PC を JupyterLab サーバーにして、LAN 内の別の PC からブラウザで使うためのセットアップスクリプトです。
 
-- **ユーザー名を指定するだけ**でユーザーごとの環境を作れます (`jfs add alice`)。ポートは空いている番号が自動 (ランダム) で割り当てられます
+- **ユーザー名を指定するだけ**でユーザーごとの環境を作れます (`jfs.cmd add alice`)。ポートは空いている番号が自動 (ランダム) で割り当てられます
 - 環境は**このリポジトリの `user` フォルダの中にユーザーごとに作られ**、各環境は**自分のフォルダの中だけ**読み書きできます
 - ノートブック・**ターミナル (PowerShell)** の両方が使えます
 - パッケージはユーザーごとの **Python 仮想環境 (venv)** に `pip install` で自由に入れられます。`git clone` も使えます
@@ -81,10 +81,18 @@ setup で行うこと:
 ## ユーザー環境を作る・管理する
 
 `jfs.cmd` を使います (管理者権限が必要です。通常のコマンドプロンプトから実行すると UAC の確認が出ます)。
+コマンドプロンプトではこのフォルダで `jfs.cmd ...`、PowerShell では `.\jfs.cmd ...` と入力します。
+
+```bat
+rem 使い方の一覧 (jfs.cmd -h、jfs.cmd --help、jfs.cmd /? でも同じ)
+jfs.cmd help
+rem コマンドごとの詳しい説明
+jfs.cmd help add
+```
 
 ```bat
 rem ユーザー alice の環境を作成して起動 (フォルダ: user\alice、ポートは自動)
-jfs add alice
+jfs.cmd add alice
 ```
 
 作成が終わると接続用 URL (トークン付き) が表示されるので、本人に伝えてください。
@@ -92,25 +100,25 @@ jfs add alice
 
 | コマンド | 内容 |
 | --- | --- |
-| `jfs list` | ユーザー環境とリソースモニターの一覧・状態・ポート |
-| `jfs url [ユーザー名]` | 接続用 URL を表示 (省略で全員分 + リソースモニター) |
-| `jfs start / stop / restart [ユーザー名]` | 起動 / 停止 / 再起動 (省略すると全員)。停止した環境は PC を再起動しても止まったまま |
-| `jfs token <ユーザー名> -New` | アクセストークン (パスワード代わり) を再発行 |
-| `jfs set <ユーザー名> -Port 23456` | ポートを固定の番号に変更 (`-AllowFrom` で接続を許可する相手も変更可) |
-| `jfs logs <ユーザー名> [-Follow]` | ログを表示 (`jfs logs monitor` でリソースモニターのログ) |
-| `jfs upgrade [ユーザー名]` | JupyterLab 本体を更新 |
-| `jfs reset-venv <ユーザー名>` | venv を作り直す (入れたパッケージを初期化) |
-| `jfs remove <ユーザー名> [-DeleteFiles]` | 環境を削除。`-DeleteFiles` を付けるとフォルダも削除 |
-| `jfs monitor [-Port 8000]` | リソースモニターを設置・更新して起動 |
-| `jfs monitor-stop` | リソースモニターを停止 |
-| `jfs firewall` | ファイアウォール規則を作り直す |
-| `jfs protect [-Background]` | 他フォルダへのアクセス禁止を設定 (設定済みの場所は飛ばす。`-Force` で付け直し) |
-| `jfs protect -Status` | アクセス禁止の設定状況 (バックグラウンド処理の進み具合) |
-| `jfs unprotect` | アクセス禁止を解除 |
+| `jfs.cmd list` | ユーザー環境とリソースモニターの一覧・状態・ポート |
+| `jfs.cmd url [ユーザー名]` | 接続用 URL を表示 (省略で全員分 + リソースモニター) |
+| `jfs.cmd start / stop / restart [ユーザー名]` | 起動 / 停止 / 再起動 (省略すると全員)。停止した環境は PC を再起動しても止まったまま |
+| `jfs.cmd token <ユーザー名> -New` | アクセストークン (パスワード代わり) を再発行 |
+| `jfs.cmd set <ユーザー名> -Port 23456` | ポートを固定の番号に変更 (`-AllowFrom` で接続を許可する相手も変更可) |
+| `jfs.cmd logs <ユーザー名> [-Follow]` | ログを表示 (`jfs.cmd logs monitor` でリソースモニターのログ) |
+| `jfs.cmd upgrade [ユーザー名]` | JupyterLab 本体を更新 |
+| `jfs.cmd reset-venv <ユーザー名>` | venv を作り直す (入れたパッケージを初期化) |
+| `jfs.cmd remove <ユーザー名> [-DeleteFiles]` | 環境を削除。`-DeleteFiles` を付けるとフォルダも削除 |
+| `jfs.cmd monitor [-Port 8000]` | リソースモニターを設置・更新して起動 |
+| `jfs.cmd monitor-stop` | リソースモニターを停止 |
+| `jfs.cmd firewall` | ファイアウォール規則を作り直す |
+| `jfs.cmd protect [-Background]` | 他フォルダへのアクセス禁止を設定 (設定済みの場所は飛ばす。`-Force` で付け直し) |
+| `jfs.cmd protect -Status` | アクセス禁止の設定状況 (バックグラウンド処理の進み具合) |
+| `jfs.cmd unprotect` | アクセス禁止を解除 |
 
 ## 別の PC から接続する
 
-`jfs url` で表示される URL をブラウザで開きます。
+`jfs.cmd url` で表示される URL をブラウザで開きます。
 
 ```
 http://jupyter.home.arpa:23456/lab?token=xxxx   ← setup で -Domain を指定した場合
@@ -189,18 +197,18 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 | 自分の `.server\jupyterlab`, `.server\config` (JupyterLab 本体・設定) | 読み取りのみ |
 | 他のユーザーの環境、このリポジトリのスクリプト・設定ファイル | できない |
 | 他の Windows ユーザーのプロファイル (`C:\Users\<名前>`、デスクトップ・ドキュメントなど) | できない (Windows の既定) |
-| システムドライブ以外のドライブ (D:\ など)、`C:\` 直下の独自フォルダ、`C:\Users\Public` | できない (`jfs protect` で拒否を設定) |
+| システムドライブ以外のドライブ (D:\ など)、`C:\` 直下の独自フォルダ、`C:\Users\Public` | できない (`jfs.cmd protect` で拒否を設定) |
 | `C:\Windows`, `C:\Program Files` など OS・アプリ | 読み取りのみ (Python・Git を動かすために必要) |
 | インターネット・LAN | 使える (pip / git のため) |
 
 - 禁止するフォルダは `servers.json` の `defaults.protectedPaths` で変更できます。`"auto"` は上の表の自動選択で、
-  `["auto", "C:\\data"]` のようにパスを追加できます。変更したら `jfs protect` を実行してください。
-  (後から作ったドライブやフォルダも `jfs protect` を再実行すると対象になります)
+  `["auto", "C:\\data"]` のようにパスを追加できます。変更したら `jfs.cmd protect` を実行してください。
+  (後から作ったドライブやフォルダも `jfs.cmd protect` を再実行すると対象になります)
 - このリポジトリを含む `C:\` 直下のフォルダ (例: `C:\tools\jupyter-for-share` の `C:\tools`) は、自動選択の対象から外れます。
   リポジトリは `C:\jupyter-for-share` のように専用の場所に置くのがおすすめです。
 - **処理時間について**: Windows のアクセス権 (NTFS) は、フォルダに付けた設定が中のファイル 1 つ 1 つにコピーされる仕組みのため、
   初回はドライブ内のファイル数に比例して時間がかかります (数分〜数十分)。次の工夫で待ち時間を減らしています。
-  - setup ではバックグラウンドで実行し、すぐに次の作業 (`jfs add` など) に進めます。進み具合は `jfs protect -Status` で確認できます
+  - setup ではバックグラウンドで実行し、すぐに次の作業 (`jfs.cmd add` など) に進めます。進み具合は `jfs.cmd protect -Status` で確認できます
   - 複数のドライブ・フォルダを並列に処理します
   - 2 回目以降は、設定済みの場所を飛ばします (新しく作られたファイルには自動で引き継がれるので付け直し不要)
 - 「許可した場所以外をすべて禁止する」方式 (ホワイトリスト) も検討しましたが、Windows では
@@ -228,7 +236,7 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 | `defaults.extraServerPackages` | `[]` | JupyterLab 側に追加する拡張機能など (例: `"jupyterlab-git"`) |
 | `defaults.venvPackages` | `[]` | 新しく作る venv に最初から入れるパッケージ |
 | `defaults.protectedPaths` | `["auto"]` | アクセスを禁止するフォルダ |
-| `monitor.port` | `8000` | リソースモニターのポート (`jfs monitor -Port` で変更) |
+| `monitor.port` | `8000` | リソースモニターのポート (`jfs.cmd monitor -Port` で変更) |
 
 ## ライセンス
 
@@ -248,15 +256,15 @@ python -m venv .venv-exp          # 例: work 内に別の venv を作成
 ## トラブルシューティング
 
 - **別の PC からつながらない**
-  - `jfs list` で「起動中」になっているか確認。なっていなければ `jfs logs <ユーザー名>` でエラーを確認
+  - `jfs.cmd list` で「起動中」になっているか確認。なっていなければ `jfs.cmd logs <ユーザー名>` でエラーを確認
   - サーバー PC のネットワークが「パブリック」になっていないか (setup が警告を出します)。「プライベート」に変更してください
-  - 接続元が別のサブネットの場合は `jfs set <ユーザー名> -AllowFrom 192.168.0.0/16` のように許可範囲を広げる
+  - 接続元が別のサブネットの場合は `jfs.cmd set <ユーザー名> -AllowFrom 192.168.0.0/16` のように許可範囲を広げる
   - サーバー PC 上のブラウザで `http://localhost:<ポート>/` が開けるか確認
 - **コンピューター名でつながらない**: IP アドレスの URL を使うか、「ドメイン名でアクセスする」の 2 か 3 を設定してください
-- **GPU が表示されない**: NVIDIA の場合はドライバが入っているか (`nvidia-smi` が動くか) を確認してください。`jfs logs monitor` にエラーが出ていないかも確認できます
+- **GPU が表示されない**: NVIDIA の場合はドライバが入っているか (`nvidia-smi` が動くか) を確認してください。`jfs.cmd logs monitor` にエラーが出ていないかも確認できます
 - **PC のスリープでつながらなくなる**: `setup.cmd -DisableSleep` で AC 電源時のスリープを無効にできます
 - **ターミナルでスクリプト (Activate.ps1 など) が実行できない**: 実行ポリシーは RemoteSigned に設定済みです。
   インターネットから取得したスクリプトはブロックされることがあるので `Unblock-File` を使ってください
-- **アクセス禁止の設定が終わったか知りたい**: `jfs protect -Status` で、実行中かどうか・設定済みの場所・ログの末尾が表示されます
-- **全部やり直したい**: `jfs remove <ユーザー名> -DeleteFiles` で各環境を削除し、`jfs monitor-stop`、`jfs unprotect` を実行します。
+- **アクセス禁止の設定が終わったか知りたい**: `jfs.cmd protect -Status` で、実行中かどうか・設定済みの場所・ログの末尾が表示されます
+- **全部やり直したい**: `jfs.cmd remove <ユーザー名> -DeleteFiles` で各環境を削除し、`jfs.cmd monitor-stop`、`jfs.cmd unprotect` を実行します。
   アカウント `jfsmon` とグループ `jupyter-for-share-users` は「コンピューターの管理」から削除できます

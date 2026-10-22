@@ -3,15 +3,12 @@
 .SYNOPSIS
     jupyter-for-share のユーザー環境 (ユーザーごとの JupyterLab) とリソースモニターを管理します。
 .DESCRIPTION
-    使い方は `jfs help` または README.md を参照してください。
+    使い方は `jfs.cmd help` または README.md を参照してください。
     管理者権限が必要です (管理者でない場合は UAC で昇格して実行し直します)。
 #>
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'list', 'add', 'set', 'remove', 'start', 'stop', 'restart',
-                 'url', 'token', 'logs', 'upgrade', 'reset-venv', 'firewall', 'protect', 'unprotect',
-                 'monitor', 'monitor-stop')]
     [string]$Command = 'help',
 
     [Parameter(Position = 1)]
@@ -33,34 +30,68 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-function Show-Help {
+$script:Commands = @('help', 'list', 'add', 'set', 'remove', 'start', 'stop', 'restart',
+                     'url', 'token', 'logs', 'upgrade', 'reset-venv', 'firewall', 'protect', 'unprotect',
+                     'monitor', 'monitor-stop')
+
+# コマンドごとの詳しい説明 (jfs.cmd help <コマンド>)
+$script:CommandHelp = @{
+    'list'         = "jfs.cmd list`n  ユーザー環境 (ユーザー名・ポート・状態・フォルダ) とリソースモニターの状態を一覧表示します。"
+    'add'          = "jfs.cmd add <ユーザー名>`n  ユーザー環境を作成して起動し、接続用 URL を表示します。`n  フォルダは user\<ユーザー名>、ポートは空いている番号から自動で決まります。`n  ユーザー名は半角英数字とハイフン (16 文字以内)。`n例: jfs.cmd add alice"
+    'set'          = "jfs.cmd set <ユーザー名> [-Port 番号] [-AllowFrom 範囲]`n  ポートや、接続を許可する相手 (ファイアウォール) を変更して再起動します。`n例: jfs.cmd set alice -Port 23456`n    jfs.cmd set alice -AllowFrom 192.168.1.0/24,192.168.2.10"
+    'remove'       = "jfs.cmd remove <ユーザー名> [-DeleteFiles] [-Force]`n  ユーザー環境 (実行用アカウント・自動起動・ファイアウォール規則) を削除します。`n  -DeleteFiles: フォルダ user\<ユーザー名> も中身ごと削除`n  -Force: 確認せずに削除"
+    'start'        = "jfs.cmd start [ユーザー名]`n  ユーザー環境を起動します。省略または all で全員分。"
+    'stop'         = "jfs.cmd stop [ユーザー名]`n  ユーザー環境を停止します。止めた環境は PC を再起動しても止まったままです。省略または all で全員分。"
+    'restart'      = "jfs.cmd restart [ユーザー名]`n  ユーザー環境を再起動します。省略または all で全員分。"
+    'url'          = "jfs.cmd url [ユーザー名]`n  接続用 URL (トークン付き) を表示します。省略すると全員分とリソースモニターの URL。"
+    'token'        = "jfs.cmd token <ユーザー名> [-New]`n  接続用 URL を表示します。-New でトークンを再発行します (古い URL は使えなくなります)。"
+    'logs'         = "jfs.cmd logs <ユーザー名|monitor> [-Follow]`n  ログの末尾を表示します。-Follow で追記を表示し続けます (Ctrl+C で終了)。"
+    'upgrade'      = "jfs.cmd upgrade [ユーザー名]`n  JupyterLab 本体を最新版に更新します。省略で全員分。venv に入れたパッケージはそのまま。"
+    'reset-venv'   = "jfs.cmd reset-venv <ユーザー名> [-Force]`n  venv を作り直します (pip で入れたパッケージは消えます。work フォルダのファイルは残ります)。"
+    'monitor'      = "jfs.cmd monitor [-Port 番号] [-AllowFrom 範囲]`n  リソースモニター (CPU / メモリ / GPU) を設置・更新して起動します。既定のポートは 8000。"
+    'monitor-stop' = "jfs.cmd monitor-stop`n  リソースモニターを停止します (再開は jfs.cmd monitor)。"
+    'firewall'     = "jfs.cmd firewall`n  Windows ファイアウォール規則を設定ファイル (servers.json) に合わせて作り直します。"
+    'protect'      = "jfs.cmd protect [-Background] [-Force]`njfs.cmd protect -Status`n  サーバー実行用アカウントから他のフォルダへのアクセスを禁止します。設定済みの場所は飛ばします。`n  -Background: 裏で実行 / -Force: 設定済みの場所も付け直す / -Status: 進み具合を表示"
+    'unprotect'    = "jfs.cmd unprotect`n  protect で設定したアクセス禁止を解除します。"
+}
+
+function Show-Help([string]$Topic) {
+    if ($Topic -and $script:CommandHelp.ContainsKey($Topic.ToLowerInvariant())) {
+        Write-Host $script:CommandHelp[$Topic.ToLowerInvariant()]
+        return
+    }
     Write-Host @'
-jupyter-for-share 管理コマンド (管理者権限で実行)
+jupyter-for-share 管理コマンド
 
-使い方: jfs <コマンド> [ユーザー名] [オプション]
+使い方: jfs.cmd <コマンド> [ユーザー名] [オプション]
+        (PowerShell から実行するときは .\jfs.cmd)
+        管理者権限が必要なコマンドは、実行すると UAC の確認が表示されます。
 
-  add <ユーザー名>               ユーザー環境を作成して起動 (フォルダ: user\<ユーザー名>、ポートは自動でランダムに決定)
-  list                           ユーザー環境とリソースモニターの一覧・状態
-  url [ユーザー名]               接続用 URL を表示 (省略で全員分)
-  start|stop|restart [ユーザー名] 起動 / 停止 / 再起動 (省略または all で全員)
-  remove <ユーザー名> [-DeleteFiles]
-                                 ユーザー環境を削除 (-DeleteFiles でフォルダも削除)
-  token <ユーザー名> -New        アクセストークンを再発行
-  set <ユーザー名> [-Port 番号] [-AllowFrom 範囲]
-                                 ポートや接続を許可する相手を変更
-  logs <ユーザー名|monitor> [-Follow]
-                                 ログを表示
-  upgrade [ユーザー名]           JupyterLab 本体を最新版に更新
-  reset-venv <ユーザー名>        venv (追加したパッケージ) を作り直す
+ユーザー環境
+  jfs.cmd add <ユーザー名>              作成して起動 (ポートは自動で決定)
+  jfs.cmd list                          一覧と状態
+  jfs.cmd url [ユーザー名]              接続用 URL を表示
+  jfs.cmd start|stop|restart [ユーザー名] 起動 / 停止 / 再起動 (省略で全員)
+  jfs.cmd remove <ユーザー名> [-DeleteFiles]
+                                        削除 (-DeleteFiles でフォルダも削除)
+  jfs.cmd token <ユーザー名> -New       トークンを再発行
+  jfs.cmd set <ユーザー名> -Port 番号   ポートなどを変更
+  jfs.cmd logs <ユーザー名> [-Follow]   ログを表示
+  jfs.cmd upgrade [ユーザー名]          JupyterLab を更新
+  jfs.cmd reset-venv <ユーザー名>       venv を作り直す
 
-  monitor [-Port 8000]           リソースモニター (CPU / メモリ / GPU) を設置・更新して起動
-  monitor-stop                   リソースモニターを停止
+リソースモニター (CPU / メモリ / GPU)
+  jfs.cmd monitor [-Port 8000]          設置・更新して起動
+  jfs.cmd monitor-stop                  停止
 
-  firewall                       Windows ファイアウォール規則を設定ファイルに合わせて更新
-  protect [-Background] [-Force] サーバー実行用アカウントから他のフォルダへのアクセスを禁止
-                                 (設定済みの場所は飛ばす。-Background で裏で実行、-Force で付け直し)
-  protect -Status                アクセス禁止の設定状況
-  unprotect                      アクセス禁止を解除
+サーバー全体
+  jfs.cmd firewall                      ファイアウォール規則を更新
+  jfs.cmd protect [-Background]         他のフォルダへのアクセスを禁止 (-Status で進み具合)
+  jfs.cmd unprotect                     アクセス禁止を解除
+
+ヘルプ
+  jfs.cmd help <コマンド>               コマンドごとの詳しい説明 (例: jfs.cmd help add)
+  jfs.cmd -h / --help / /?              この一覧を表示
 '@
 }
 
@@ -76,7 +107,7 @@ function Find-UserEnv($Config, [string]$UserName) {
 function Get-TargetUsers($Config, [string]$UserName) {
     if (-not $UserName -or $UserName -eq 'all') { return @($Config.users) }
     $s = Find-UserEnv $Config $UserName
-    if (-not $s) { throw "ユーザー '$UserName' は登録されていません。'jfs list' で確認してください。" }
+    if (-not $s) { throw "ユーザー '$UserName' は登録されていません。'jfs.cmd list' で確認してください。" }
     return @($s)
 }
 
@@ -145,7 +176,7 @@ function Get-ReservedPorts($Config, [string]$Except) {
 
 function Assert-PortAvailable($Config, [int]$P, [string]$Self) {
     if ($P -lt 1024 -or $P -gt 65535) { throw "ポート番号 $P は使えません (1024-65535)。" }
-    if ((Get-ReservedPorts $Config $Self) -contains $P) { throw "ポート $P は既に使われています ('jfs list' で確認)。" }
+    if ((Get-ReservedPorts $Config $Self) -contains $P) { throw "ポート $P は既に使われています ('jfs.cmd list' で確認)。" }
     if (Test-PortListening $P) { throw "ポート $P は他のプログラムが使用中です。" }
 }
 
@@ -280,7 +311,7 @@ function Write-ServerFiles($Config, $UserEnv) {
     $bind = [string](Get-Value $Config.defaults 'bindAddress' '0.0.0.0')
 
     $py = @'
-# jupyter-for-share が生成したファイルです。jfs コマンドで上書きされるため直接編集しないでください。
+# jupyter-for-share が生成したファイルです。jfs.cmd で上書きされるため直接編集しないでください。
 c = get_config()  # noqa
 c.ServerApp.ip = '@@BIND@@'
 c.ServerApp.port = @@PORT@@
@@ -299,7 +330,7 @@ c.ServerApp.terminado_settings = {'shell_command': ['powershell.exe', '-NoLogo']
     # HOME や AppData などを環境のフォルダ内に向け、venv を PATH の先頭に置いて JupyterLab を起動する
     $cmd = @'
 @echo off
-rem Generated by jupyter-for-share. Do not edit: the jfs command overwrites this file.
+rem Generated by jupyter-for-share. Do not edit: the jfs.cmd command overwrites this file.
 set "HOME=@@HOME@@"
 set "USERPROFILE=@@HOME@@"
 set "APPDATA=@@HOME@@\AppData\Roaming"
@@ -430,7 +461,7 @@ function Start-JfsTask([string]$TaskName, [int]$P, [string]$Label, [string]$LogH
             return
         }
     }
-    Write-Warn "$Label がポート $P で応答しません。'jfs logs $LogHint' でログを確認してください。"
+    Write-Warn "$Label がポート $P で応答しません。'jfs.cmd logs $LogHint' でログを確認してください。"
 }
 
 # 停止したものは Windows を再起動しても起動しない (start で再開)
@@ -489,7 +520,7 @@ function Install-Monitor($Config) {
     $bind = [string](Get-Value $Config.defaults 'bindAddress' '0.0.0.0')
     $cmd = @'
 @echo off
-rem Generated by jupyter-for-share. Do not edit: the jfs command overwrites this file.
+rem Generated by jupyter-for-share. Do not edit: the jfs.cmd command overwrites this file.
 set "TEMP=@@TMP@@"
 set "TMP=@@TMP@@"
 set "PYTHONUTF8=1"
@@ -607,7 +638,7 @@ function Get-ProtectTargets($Config) {
 }
 
 # 設定済みの対象は .runtime\protected.json に記録する (servers.json とは別にして、
-# バックグラウンド実行中に jfs add などで設定ファイルを書き換えても競合しないようにする)
+# バックグラウンド実行中に jfs.cmd add などで設定ファイルを書き換えても競合しないようにする)
 function Get-ProtectStatePaths {
     $dir = Join-Path $script:RepoRoot '.runtime'
     return [pscustomobject]@{
@@ -732,7 +763,7 @@ function Start-ProtectBackground {
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", 'protect', '-LogFile', "`"$($st.Log)`"")
     $job = @{ pid = $proc.Id; started = (Get-Date).ToString('o') }
     [System.IO.File]::WriteAllText($st.Job, (ConvertTo-Json $job), (New-Object System.Text.UTF8Encoding($false)))
-    Write-Ok "アクセス禁止の設定をバックグラウンドで開始しました。進み具合は 'jfs protect -Status' で確認できます。"
+    Write-Ok "アクセス禁止の設定をバックグラウンドで開始しました。進み具合は 'jfs.cmd protect -Status' で確認できます。"
 }
 
 function Get-ProtectJobState {
@@ -760,6 +791,14 @@ function Show-ProtectStatus($Config) {
 
 # ---- メイン ----
 
+if ($script:Commands -notcontains $Command.ToLowerInvariant()) {
+    Write-Host "[x] '$Command' というコマンドはありません。" -ForegroundColor Red
+    Write-Host ''
+    Show-Help
+    exit 1
+}
+$Command = $Command.ToLowerInvariant()
+
 if ($Command -ne 'help' -and -not (Test-Admin)) {
     Start-Elevated $PSCommandPath $PSBoundParameters
     exit 0
@@ -770,7 +809,7 @@ $bound = $PSBoundParameters
 try {
     switch ($Command) {
         'help' {
-            Show-Help
+            Show-Help $Name
         }
 
         'list' {
@@ -784,13 +823,13 @@ try {
                 }
             })
             if ($rows.Count -gt 0) { $rows | Format-Table -AutoSize | Out-Host }
-            else { Write-Info "ユーザー環境はまだありません。'jfs add <ユーザー名>' で作成してください。" }
+            else { Write-Info "ユーザー環境はまだありません。'jfs.cmd add <ユーザー名>' で作成してください。" }
             Write-Host "リソースモニター: ポート $($cfg.monitor.port) / $(Get-TaskStatus 'jfs-monitor' ([int]$cfg.monitor.port))"
-            if ((Get-ProtectJobState) -eq 'running') { Write-Host "アクセス禁止の設定: バックグラウンドで実行中 ('jfs protect -Status' で確認)" }
+            if ((Get-ProtectJobState) -eq 'running') { Write-Host "アクセス禁止の設定: バックグラウンドで実行中 ('jfs.cmd protect -Status' で確認)" }
         }
 
         'add' {
-            if (-not $Name) { throw 'ユーザー名を指定してください。例: jfs add alice' }
+            if (-not $Name) { throw 'ユーザー名を指定してください。例: jfs.cmd add alice' }
             $userName = ConvertTo-UserName $Name
             $cfg = Read-Config
             if (Find-UserEnv $cfg $userName) { throw "ユーザー '$userName' は既に存在します。" }
