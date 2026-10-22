@@ -1,10 +1,10 @@
-"""jupyter-for-share: JupyterLab を起動し、管理用ウィンドウが閉じられたら停止するランチャー
+"""jupyter-for-share: JupyterLab を起動し、サーバー管理ウィンドウが閉じられたら停止するランチャー
 
 jfs.ps1 が各ユーザー環境の .server\\config にコピーし、run.cmd から
     python launcher.py <ハートビートファイル>
 として実行します (サーバー実行用アカウントの権限で動きます)。
 
-- 管理用ウィンドウ (jfs.cmd start で開くウィンドウ) は、ハートビートファイルを毎秒更新します。
+- サーバー管理ウィンドウ (jfs.cmd start で開くウィンドウ) は、ハートビートファイルを毎秒更新します。
   更新が HEARTBEAT_TIMEOUT 秒止まったら (ウィンドウが閉じられたら) JupyterLab を停止します。
 - Windows のジョブオブジェクトに入れておくことで、このランチャーが終了したときに
   JupyterLab が起動したカーネルやターミナルもまとめて終了させます。
@@ -104,7 +104,7 @@ def main():
             log("JupyterLab が終了しました (終了コード %d)" % code)
             return code
         if heartbeat and heartbeat_age(heartbeat) > HEARTBEAT_TIMEOUT:
-            log("管理用ウィンドウが閉じられたため、サーバーを停止します")
+            log("サーバー管理ウィンドウが閉じられた (または停止の指示があった) ため、サーバーを停止します")
             proc.terminate()
             try:
                 proc.wait(10)

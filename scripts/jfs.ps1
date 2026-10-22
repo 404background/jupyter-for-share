@@ -34,7 +34,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
 $script:Commands = @('help', 'list', 'add', 'doctor', 'network', 'set', 'remove', 'start', 'stop', 'restart',
-                     'serve', 'refresh', 'autostart',
+                     'hub', 'refresh', 'autostart',
                      'url', 'token', 'logs', 'upgrade', 'reset-venv', 'firewall', 'protect', 'unprotect',
                      'monitor', 'monitor-stop')
 
@@ -44,13 +44,13 @@ $script:CommandHelp = @{
     'add'          = "jfs.cmd add <ユーザー名>`n  ユーザー環境を作成して起動し、接続用 URL を表示します。`n  フォルダは user\<ユーザー名>、ポートは空いている番号から自動で決まります。`n  ユーザー名は半角英数字とハイフン (16 文字以内)。`n例: jfs.cmd add alice"
     'set'          = "jfs.cmd set <ユーザー名> [-Port 番号] [-AllowFrom 範囲]`n  ポートや、接続を許可する相手 (ファイアウォール) を変更して再起動します。`n例: jfs.cmd set alice -Port 23456`n    jfs.cmd set alice -AllowFrom 192.168.1.0/24,192.168.2.10"
     'remove'       = "jfs.cmd remove <ユーザー名> [-KeepFiles] [-Force]`n  ユーザー環境 (実行用アカウント・自動起動・ファイアウォール規則) を、フォルダ user\<ユーザー名> ごと削除します。`n  -KeepFiles: フォルダは残す`n  -Force: 確認せずに削除"
-    'start'        = "jfs.cmd start [ユーザー名]`n  ユーザーごとに管理用ウィンドウを開いてサーバーを起動します。省略または all で全員分。`n  ウィンドウにはサーバーのログと、利用者が実行したコマンドが表示されます。`n  ウィンドウを閉じる (または Ctrl+C) とサーバーが停止します。"
-    'stop'         = "jfs.cmd stop [ユーザー名]`n  管理用ウィンドウを閉じてサーバーを停止します。省略または all で全員分。"
+    'start'        = "jfs.cmd start [ユーザー名]`n  サーバー管理ウィンドウ (全ユーザー共通で 1 つ) を開き、そのユーザーのサーバーを起動します。省略または all で全員分。`n  ウィンドウには全員のサーバーのログと実行したコマンドが [ユーザー名] 付きで表示されます。`n  ウィンドウを閉じる (または Ctrl+C) と全員のサーバーが停止します。"
+    'stop'         = "jfs.cmd stop [ユーザー名]`n  そのユーザーのサーバーを停止します。省略または all で全員を停止し、サーバー管理ウィンドウも閉じます。"
     'restart'      = "jfs.cmd restart [ユーザー名]`n  ユーザー環境を再起動します。省略または all で全員分。"
     'url'          = "jfs.cmd url [ユーザー名]`n  接続用 URL (トークン付き) を表示します。省略すると全員分とリソースモニターの URL。"
     'token'        = "jfs.cmd token <ユーザー名> [-New]`n  接続用 URL を表示します。-New でトークンを再発行します (古い URL は使えなくなります)。"
     'logs'         = "jfs.cmd logs <ユーザー名|monitor> [-Follow]`n  サーバーのログと、利用者が実行したコマンドの記録 (user\<ユーザー名>\.logs) の末尾を表示します。`n  -Follow でサーバーのログの追記を表示し続けます (Ctrl+C で終了)。"
-    'autostart'    = "jfs.cmd autostart on|off`n  on: この管理者が Windows にサインインしたとき、全ユーザーのサーバー (管理用ウィンドウ) を自動で開く`n  off: 自動で開かない"
+    'autostart'    = "jfs.cmd autostart on|off`n  on: この管理者が Windows にサインインしたとき、全ユーザーのサーバー (サーバー管理ウィンドウ) を自動で開く`n  off: 自動で開かない"
     'refresh'      = "jfs.cmd refresh`n  全ユーザーの起動用ファイル・設定・起動用タスクを作り直します (更新後に setup.cmd から自動で実行されます)。"
     'upgrade'      = "jfs.cmd upgrade [ユーザー名]`n  JupyterLab 本体を最新版に更新します。省略で全員分。venv に入れたパッケージはそのまま。"
     'reset-venv'   = "jfs.cmd reset-venv <ユーザー名> [-Force]`n  venv を作り直します (pip で入れたパッケージは消えます。work フォルダのファイルは残ります)。"
@@ -79,7 +79,7 @@ jupyter-for-share 管理コマンド
   jfs.cmd add <ユーザー名>              作成して起動 (ポートは自動で決定)
   jfs.cmd list                          一覧と状態
   jfs.cmd url [ユーザー名]              接続用 URL を表示
-  jfs.cmd start [ユーザー名]            管理用ウィンドウを開いて起動 (省略で全員。閉じると停止)
+  jfs.cmd start [ユーザー名]            起動 (省略で全員)。サーバー管理ウィンドウは 1 つだけ開き、閉じると全員停止
   jfs.cmd stop|restart [ユーザー名]     停止 / 再起動 (省略で全員)
   jfs.cmd remove <ユーザー名>           フォルダごと削除 (-KeepFiles でフォルダは残す)
   jfs.cmd token <ユーザー名> -New       トークンを再発行
@@ -376,7 +376,7 @@ c.ServerApp.terminado_settings = {'shell_command': [
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText((Join-Path $p.Config 'jupyter_server_config.py'), $py, $utf8)
 
-    # ランチャー (管理用ウィンドウが閉じたら停止) と、コマンド記録用のスクリプトを配置する
+    # ランチャー (サーバー管理ウィンドウが閉じたら停止) と、コマンド記録用のスクリプトを配置する
     $src = Join-Path $script:RepoRoot 'server'
     Copy-Item -LiteralPath (Join-Path $src 'launcher.py') -Destination $p.Launcher -Force
     Copy-Item -LiteralPath (Join-Path $src 'terminal-init.ps1') -Destination $p.TermInit -Force
@@ -482,7 +482,7 @@ $monitor
 
 # ---- タスクスケジューラ (Windows 起動時に、サーバー実行用アカウントで自動起動) ----
 
-# -OnDemand: Windows 起動時には起動せず、管理用ウィンドウ (jfs.cmd start) からだけ起動する
+# -OnDemand: Windows 起動時には起動せず、サーバー管理ウィンドウ (jfs.cmd start) からだけ起動する
 function Register-JfsTask([string]$TaskName, [string]$Account, [string]$RunCmd, [string]$WorkDir, [string]$Description,
                           [switch]$OnDemand) {
     # パスワードは保存せず、登録のたびに新しいランダムなものを設定する
@@ -611,19 +611,33 @@ function Register-UserTask($UserEnv) {
         (Get-InstancePaths $UserEnv).Work "jupyter-for-share: $($UserEnv.name) (port $($UserEnv.port))" -OnDemand
 }
 
-# ---- 管理用ウィンドウ (ユーザーごとのサーバーを表示したまま動かす) ----
-# jfs.cmd start で、ユーザーごとに PowerShell のウィンドウを開き (jfs.ps1 serve <名前>)、
-# その中でサーバーを起動してログと実行コマンドを表示し続ける。
-# ウィンドウは毎秒ハートビートファイルを更新し、更新が止まる (ウィンドウが閉じられる) と
-# ランチャー (server\launcher.py) が JupyterLab・カーネル・ターミナルを停止する。
+# ---- サーバー管理ウィンドウ (全ユーザーのサーバーを 1 つのウィンドウで動かす) ----
+# jfs.cmd start でウィンドウを 1 つ開き (jfs.ps1 hub)、その中で起動対象のユーザーのサーバーを動かし、
+# 全員分のログと実行コマンドを [ユーザー名] 付きで表示し続ける。
+# ウィンドウはユーザーごとのハートビートファイルを毎秒更新し、更新が止まる (ウィンドウが閉じられる) と
+# 各ユーザーのランチャー (server\launcher.py) が JupyterLab・カーネル・ターミナルを停止する。
+# 起動対象のユーザーは .runtime\hub-wanted.json で管理し、jfs.cmd start / stop で変更する。
 
-function Get-ConsoleRecordPath([string]$UserName) {
-    return (Join-Path (Join-Path $script:RepoRoot '.runtime\consoles') "$UserName.json")
+function Get-HubPaths {
+    $dir = Join-Path $script:RepoRoot '.runtime'
+    return [pscustomobject]@{
+        Dir    = $dir
+        Record = Join-Path $dir 'hub.json'
+        Wanted = Join-Path $dir 'hub-wanted.json'
+    }
 }
 
-# 管理用ウィンドウのプロセス (記録がない・終了している場合は $null)
-function Get-ConsoleProcess([string]$UserName) {
-    $f = Get-ConsoleRecordPath $UserName
+function Write-JsonFile([string]$Path, $Object) {
+    $dir = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $tmp = "$Path.tmp"
+    [System.IO.File]::WriteAllText($tmp, (ConvertTo-Json -InputObject $Object -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmp -Destination $Path -Force
+}
+
+# サーバー管理ウィンドウのプロセス (開いていなければ $null)
+function Get-HubProcess {
+    $f = (Get-HubPaths).Record
     if (-not (Test-Path -LiteralPath $f)) { return $null }
     try {
         $rec = Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -635,49 +649,98 @@ function Get-ConsoleProcess([string]$UserName) {
     return $null
 }
 
+# 起動対象: all = 設定ファイルの全員 / users = 個別に指定したユーザー
+function Get-Wanted {
+    $f = (Get-HubPaths).Wanted
+    $w = [pscustomobject]@{ all = $false; users = @() }
+    if (Test-Path -LiteralPath $f) {
+        try {
+            $data = Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json
+            $w.all = [bool]$data.all
+            $w.users = @(foreach ($x in @($data.users)) { if ($x) { [string]$x } })
+        } catch { }
+    }
+    return $w
+}
+
+function Save-Wanted([bool]$All, [string[]]$Users) {
+    Write-JsonFile (Get-HubPaths).Wanted @{ all = $All; users = @($Users | Where-Object { $_ } | Select-Object -Unique) }
+}
+
+function Test-Wanted($Wanted, [string]$UserName) {
+    return ($Wanted.all -or ($Wanted.users -contains $UserName))
+}
+
+function Add-Wanted([string]$UserName) {
+    $w = Get-Wanted
+    Save-Wanted $w.all (@($w.users) + $UserName)
+}
+
+function Remove-Wanted($Config, [string]$UserName) {
+    $w = Get-Wanted
+    $users = if ($w.all) { @($Config.users | ForEach-Object { $_.name }) } else { @($w.users) }
+    Save-Wanted $false @($users | Where-Object { $_ -ne $UserName })
+}
+
+# サーバー管理ウィンドウが開いていなければ開く (ウィンドウは常に 1 つだけ)
+function Open-Hub {
+    if (Get-HubProcess) { return }
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", 'hub') | Out-Null
+    Write-Info 'サーバー管理ウィンドウを開きました (全ユーザーのログはこのウィンドウに表示されます)。'
+    $deadline = (Get-Date).AddSeconds(20)
+    while (-not (Get-HubProcess) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+}
+
 function Get-UserStatus($UserEnv) {
     $listening = Test-PortListening ([int]$UserEnv.port)
-    $console = Get-ConsoleProcess $UserEnv.name
-    if ($console -and $listening) { return '起動中' }
-    if ($console) { return '起動処理中' }
-    if ($listening) { return "起動中 (管理用ウィンドウなし。'jfs.cmd restart $($UserEnv.name)' で開き直せます)" }
-    if (-not (Get-JfsTask (Get-TaskName $UserEnv))) { return "停止 (自動起動タスク未登録。'jfs.cmd refresh' で登録)" }
+    $hub = [bool](Get-HubProcess)
+    $wanted = Test-Wanted (Get-Wanted) $UserEnv.name
+    if ($hub -and $wanted -and $listening) { return '起動中' }
+    if ($hub -and $wanted) { return '起動処理中' }
+    if ($listening) { return "起動中 (管理ウィンドウの外で動いています。'jfs.cmd restart $($UserEnv.name)' で切り替え)" }
     return '停止'
 }
 
-# 管理用ウィンドウを開き、サーバーが応答するまで待つ
+function Wait-UserListening($UserEnv, [int]$TimeoutSec = 150) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-PortListening ([int]$UserEnv.port)) { return $true }
+        if (-not (Get-HubProcess)) { return $false }   # ウィンドウが閉じられた
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
+
+# ユーザーを起動対象にし、サーバー管理ウィンドウで起動されるのを待つ
 function Start-UserEnv($UserEnv) {
     $label = "ユーザー '$($UserEnv.name)' の環境"
-    if (Get-ConsoleProcess $UserEnv.name) {
-        Write-Info "$label は起動済みです (管理用ウィンドウが開いています)。"
+    Add-Wanted $UserEnv.name
+    if ((Get-HubProcess) -and (Test-PortListening ([int]$UserEnv.port))) {
+        Write-Info "$label は起動済みです。"
         return $true
     }
-    Start-Process -FilePath 'powershell.exe' -ArgumentList @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", 'serve', $UserEnv.name) | Out-Null
-    Write-Info "$($label)の管理用ウィンドウを開きました。サーバーの起動を待っています (初回は 1 分ほどかかることがあります)..."
-    $deadline = (Get-Date).AddSeconds(150)
-    $seenConsole = $false
-    while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Seconds 2
-        if (Test-PortListening ([int]$UserEnv.port)) {
-            Write-Ok "$label が起動しました (ポート $($UserEnv.port))。"
-            return $true
-        }
-        $alive = [bool](Get-ConsoleProcess $UserEnv.name)
-        if ($alive) { $seenConsole = $true }
-        elseif ($seenConsole) { break }   # ウィンドウが閉じられた
+    Open-Hub
+    Write-Info "$label の起動を待っています (初回は 1 分ほどかかることがあります)..."
+    if (Wait-UserListening $UserEnv) {
+        Write-Ok "$label が起動しました (ポート $($UserEnv.port))。"
+        return $true
     }
-    Write-Warn "$label がポート $($UserEnv.port) で起動しませんでした。管理用ウィンドウの表示を確認してください。"
+    Write-Warn "$label がポート $($UserEnv.port) で起動しませんでした。サーバー管理ウィンドウの表示を確認してください。"
     Show-LogTail (Get-InstancePaths $UserEnv).Log
     Write-Host '  詳しい診断: jfs.cmd doctor'
     return $false
 }
 
-# 管理用ウィンドウを閉じ、サーバー (実行用アカウントのプロセス) を停止する
-function Stop-UserEnv($UserEnv) {
-    $console = Get-ConsoleProcess $UserEnv.name
-    if ($console) { $console | Stop-Process -Force -ErrorAction SilentlyContinue }
-    Remove-Item -LiteralPath (Get-ConsoleRecordPath $UserEnv.name) -ErrorAction SilentlyContinue
+# ユーザーを起動対象から外し、サーバー (実行用アカウントのプロセス) を停止する
+function Stop-UserEnv($UserEnv, $Config) {
+    if (-not $Config) { $Config = Read-Config }
+    Remove-Wanted $Config $UserEnv.name
+    if (Get-HubProcess) {
+        # 管理ウィンドウ側で止めるのを少し待つ
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Test-PortListening ([int]$UserEnv.port)) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+    }
     Remove-Item -LiteralPath (Get-InstancePaths $UserEnv).Heartbeat -ErrorAction SilentlyContinue
     Stop-JfsTask (Get-TaskName $UserEnv) (Get-AccountName $UserEnv) "ユーザー '$($UserEnv.name)' の環境"
 }
@@ -718,74 +781,156 @@ function Write-ServerLine([string]$Line) {
     else { Write-Host $Line }
 }
 
-# 管理用ウィンドウの本体 (jfs.ps1 serve <名前>)
-function Invoke-Serve($Config, $UserEnv) {
-    $p = Get-InstancePaths $UserEnv
-    $name = $UserEnv.name
-    $taskName = Get-TaskName $UserEnv
-    $Host.UI.RawUI.WindowTitle = "jupyter-for-share: $name (ポート $($UserEnv.port)) - 閉じるとサーバーが停止します"
+function Write-UserLine([string]$UserName, [string]$Line, [string]$Kind = 'server') {
+    Write-Host ("[{0}] " -f $UserName) -NoNewline -ForegroundColor Magenta
+    if ($Kind -eq 'command') { Write-Host "[コマンド] $Line" -ForegroundColor Cyan; return }
+    Write-ServerLine $Line
+}
 
-    if (Get-ConsoleProcess $name) { throw "ユーザー '$name' の管理用ウィンドウは既に開いています。" }
-    $me = Get-Process -Id $PID
-    $recDir = Split-Path -Parent (Get-ConsoleRecordPath $name)
-    if (-not (Test-Path -LiteralPath $recDir)) { New-Item -ItemType Directory -Path $recDir -Force | Out-Null }
-    [System.IO.File]::WriteAllText((Get-ConsoleRecordPath $name),
-        (ConvertTo-Json @{ pid = $PID; started = $me.StartTime.ToString('o') }), (New-Object System.Text.UTF8Encoding($false)))
+# サーバー管理ウィンドウを閉じずに、1 人のサーバーだけを再起動する
+# (プロセスを止めると、管理ウィンドウが設定ファイルを読み直して起動し直す)
+function Restart-UserEnv($UserEnv, $Config) {
+    if (-not ((Get-HubProcess) -and (Test-Wanted (Get-Wanted) $UserEnv.name))) {
+        Stop-UserEnv $UserEnv $Config
+        return (Start-UserEnv $UserEnv)
+    }
+    Stop-JfsTask (Get-TaskName $UserEnv) (Get-AccountName $UserEnv) "ユーザー '$($UserEnv.name)' の環境"
+    Write-Info "ユーザー '$($UserEnv.name)' の環境を再起動しています..."
+    $deadline = (Get-Date).AddSeconds(5)
+    while ((Test-PortListening ([int]$UserEnv.port)) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+    if (Wait-UserListening $UserEnv) { Write-Ok "ユーザー '$($UserEnv.name)' の環境を再起動しました (ポート $($UserEnv.port))。"; return $true }
+    Write-Warn "ユーザー '$($UserEnv.name)' の環境が起動しませんでした。サーバー管理ウィンドウの表示を確認してください。"
+    return $false
+}
 
-    try {
-        # 前のサーバーが残っていれば止める (旧バージョンの自動起動など)
-        if (Test-PortListening ([int]$UserEnv.port)) { Stop-JfsTask $taskName (Get-AccountName $UserEnv) "前回のサーバー ($name)" }
-        Initialize-LogsFolder $UserEnv
-        Write-ServerFiles $Config $UserEnv
-        Register-UserTask $UserEnv
-
-        Show-UserUrls $Config $UserEnv
-        Write-Host "ログ: $($p.Log)"
-        Write-Host "実行コマンドの記録: $($p.CommandLog)"
-        Write-Host 'このウィンドウを閉じる (または Ctrl+C) とサーバーが停止します。' -ForegroundColor Yellow
-        Write-Host ('-' * 70)
-
-        $serverTail = New-LogTail $p.Log
-        $commandTail = New-LogTail $p.CommandLog
-        $nextStart = Get-Date
-        $running = $false
-        $startedAt = [datetime]::MinValue
-        while ($true) {
-            [System.IO.File]::WriteAllText($p.Heartbeat, (Get-Date).ToString('o'))
-            $task = Get-JfsTask $taskName
-            $state = if ($task) { [string]$task.State } else { 'Missing' }
-            if ($state -eq 'Running' -or ((Get-Date) - $startedAt).TotalSeconds -lt 10) {
-                # 起動直後は状態が切り替わるまで少し待つ
-            } else {
-                if ($running) {
-                    $info = Get-ScheduledTaskInfo -TaskPath $script:TaskPath -TaskName $taskName -ErrorAction SilentlyContinue
-                    $result = if ($info) { Get-TaskResultText $info.LastTaskResult } else { '不明' }
-                    Write-Host "[jupyter-for-share] サーバーが停止しました (結果: $result)。10 秒後に再起動します (Ctrl+C で終了)。" -ForegroundColor Red
-                    $running = $false
-                    $nextStart = (Get-Date).AddSeconds(10)
-                }
-                if ((Get-Date) -ge $nextStart) {
-                    if ($task -and $state -eq 'Disabled') { Enable-ScheduledTask -InputObject $task | Out-Null }
-                    Start-ScheduledTask -TaskPath $script:TaskPath -TaskName $taskName
-                    Write-Host "[jupyter-for-share] サーバーを起動しています (ポート $($UserEnv.port))..." -ForegroundColor Green
-                    $running = $true
-                    $startedAt = Get-Date
-                }
-            }
-            foreach ($line in (Read-LogTail $serverTail)) { Write-ServerLine $line }
-            foreach ($line in (Read-LogTail $commandTail)) { Write-Host "[コマンド] $line" -ForegroundColor Cyan }
-            Start-Sleep -Seconds 1
-        }
-    } finally {
-        # Ctrl+C やエラーで終わるとき。ウィンドウの × で閉じた場合はここが実行されないことがあるが、
-        # その場合もハートビートが止まるのでランチャーがサーバーを停止する。
-        Remove-Item -LiteralPath $p.Heartbeat -ErrorAction SilentlyContinue
-        Stop-JfsTask $taskName (Get-AccountName $UserEnv) "ユーザー '$name' の環境"
-        Remove-Item -LiteralPath (Get-ConsoleRecordPath $name) -ErrorAction SilentlyContinue
+# jfs.cmd start [ユーザー名|all]
+function Start-Users($Config, [string]$UserName) {
+    if ($UserName -and $UserName -ne 'all') { Start-UserEnv (Get-RequiredUser $Config $UserName) | Out-Null; return }
+    $users = @($Config.users)
+    if ($users.Count -eq 0) { throw "ユーザー環境がありません。'jfs.cmd add <ユーザー名>' で作成してください。" }
+    Save-Wanted $true @()
+    Open-Hub
+    Write-Info '全ユーザーのサーバーの起動を待っています...'
+    foreach ($u in $users) {
+        if (Wait-UserListening $u) { Write-Ok "ユーザー '$($u.name)' (ポート $($u.port)) が起動しました。" }
+        else { Write-Warn "ユーザー '$($u.name)' が起動しませんでした。サーバー管理ウィンドウの表示を確認してください。" }
     }
 }
 
-# Windows にサインインしたときに、全ユーザーの管理用ウィンドウを開く
+# jfs.cmd stop [ユーザー名|all]
+function Stop-Users($Config, [string]$UserName) {
+    if ($UserName -and $UserName -ne 'all') { Stop-UserEnv (Get-RequiredUser $Config $UserName) $Config; return }
+    Save-Wanted $false @()
+    $deadline = (Get-Date).AddSeconds(20)
+    while ((Get-HubProcess) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }   # ウィンドウ側で止めて閉じる
+    foreach ($u in @($Config.users)) {
+        Remove-Item -LiteralPath (Get-InstancePaths $u).Heartbeat -ErrorAction SilentlyContinue
+        Stop-JfsTask (Get-TaskName $u) (Get-AccountName $u) "ユーザー '$($u.name)' の環境"
+    }
+}
+
+# サーバー管理ウィンドウの本体 (jfs.ps1 hub)
+function Invoke-Hub {
+    if (Get-HubProcess) { throw 'サーバー管理ウィンドウは既に開いています。' }
+    $hp = Get-HubPaths
+    $me = Get-Process -Id $PID
+    Write-JsonFile $hp.Record @{ pid = $PID; started = $me.StartTime.ToString('o') }
+
+    Write-Host 'jupyter-for-share サーバー管理ウィンドウ' -ForegroundColor White
+    Write-Host 'このウィンドウを閉じる (または Ctrl+C) と、全ユーザーのサーバーが停止します。' -ForegroundColor Yellow
+    Write-Host "1 人だけ止める: jfs.cmd stop <ユーザー名> / 起動する: jfs.cmd start <ユーザー名>"
+    Write-Host ('-' * 70)
+
+    $states = @{}      # ユーザー名 → 状態 (起動中か、ログの読み込み位置など)
+    $cfg = Read-Config
+    $lastConfigRead = Get-Date
+    $everRan = $false
+    try {
+        while ($true) {
+            if (((Get-Date) - $lastConfigRead).TotalSeconds -ge 5) { $cfg = Read-Config; $lastConfigRead = Get-Date }
+            $wanted = Get-Wanted
+            $running = 0
+            foreach ($u in @($cfg.users)) {
+                $name = $u.name
+                $st = $states[$name]
+                $want = Test-Wanted $wanted $name
+                if (-not $want) {
+                    if ($st -and $st.Active) {
+                        Remove-Item -LiteralPath $st.Paths.Heartbeat -ErrorAction SilentlyContinue
+                        Stop-JfsTask $st.Task (Get-AccountName $u) "ユーザー '$name' の環境"
+                        Write-UserLine $name '[jupyter-for-share] サーバーを停止しました。'
+                        $st.Active = $false
+                    }
+                    continue
+                }
+                $running++
+                $everRan = $true
+                if (-not $st -or -not $st.Active) {
+                    # このユーザーのサーバーを準備して起動する
+                    try {
+                        if (Test-PortListening ([int]$u.port)) { Stop-JfsTask (Get-TaskName $u) (Get-AccountName $u) "前回のサーバー ($name)" }
+                        Initialize-LogsFolder $u
+                        Write-ServerFiles $cfg $u
+                        Register-UserTask $u
+                    } catch {
+                        Write-UserLine $name "[jupyter-for-share] 起動の準備に失敗しました: $($_.Exception.Message)"
+                        Remove-Wanted $cfg $name
+                        continue
+                    }
+                    $paths = Get-InstancePaths $u
+                    $st = [pscustomobject]@{
+                        Active = $true; Task = (Get-TaskName $u); Paths = $paths; Port = [int]$u.port
+                        ServerTail = (New-LogTail $paths.Log); CommandTail = (New-LogTail $paths.CommandLog)
+                        Running = $false; StartedAt = [datetime]::MinValue; NextStart = (Get-Date)
+                    }
+                    $states[$name] = $st
+                    Write-UserLine $name "[jupyter-for-share] 起動します (ポート $($u.port) / ログ: $($paths.Log))"
+                }
+
+                [System.IO.File]::WriteAllText($st.Paths.Heartbeat, (Get-Date).ToString('o'))
+                $task = Get-JfsTask $st.Task
+                $stateName = if ($task) { [string]$task.State } else { 'Missing' }
+                if ($stateName -ne 'Running' -and ((Get-Date) - $st.StartedAt).TotalSeconds -ge 10) {
+                    if ($st.Running) {
+                        $info = Get-ScheduledTaskInfo -TaskPath $script:TaskPath -TaskName $st.Task -ErrorAction SilentlyContinue
+                        $result = if ($info) { Get-TaskResultText $info.LastTaskResult } else { '不明' }
+                        Write-UserLine $name "[jupyter-for-share] サーバーが停止しました (結果: $result)。10 秒後に再起動します。"
+                        $st.Running = $false
+                        $st.NextStart = (Get-Date).AddSeconds(10)
+                    }
+                    if ((Get-Date) -ge $st.NextStart) {
+                        if ($task -and $stateName -eq 'Disabled') { Enable-ScheduledTask -InputObject $task | Out-Null }
+                        Start-ScheduledTask -TaskPath $script:TaskPath -TaskName $st.Task
+                        $st.Running = $true
+                        $st.StartedAt = Get-Date
+                    }
+                }
+                foreach ($line in (Read-LogTail $st.ServerTail)) { Write-UserLine $name $line }
+                foreach ($line in (Read-LogTail $st.CommandTail)) { Write-UserLine $name $line 'command' }
+            }
+            $Host.UI.RawUI.WindowTitle = "jupyter-for-share サーバー ($running 人) - 閉じると全員のサーバーが停止します"
+            if ($everRan -and $running -eq 0) {
+                Write-Host '起動対象のユーザーがいなくなったため、ウィンドウを閉じます。' -ForegroundColor Yellow
+                Start-Sleep -Seconds 3
+                break
+            }
+            Start-Sleep -Seconds 1
+        }
+    } finally {
+        # Ctrl+C やエラーで終わるとき。× で閉じた場合はここが実行されないことがあるが、
+        # その場合もハートビートが止まるので各ランチャーがサーバーを停止する。
+        foreach ($name in @($states.Keys)) {
+            $st = $states[$name]
+            if (-not $st.Active) { continue }
+            Remove-Item -LiteralPath $st.Paths.Heartbeat -ErrorAction SilentlyContinue
+            $u = Find-UserEnv $cfg $name
+            if ($u) { Stop-JfsTask $st.Task (Get-AccountName $u) "ユーザー '$name' の環境" }
+        }
+        Remove-Item -LiteralPath $hp.Record -ErrorAction SilentlyContinue
+    }
+}
+
+# Windows にサインインしたときに、サーバー管理ウィンドウを開いて全ユーザーを起動する
 function Set-AutoStart([bool]$Enabled) {
     $taskName = 'jfs-autostart'
     $task = Get-JfsTask $taskName
@@ -799,7 +944,7 @@ function Set-AutoStart([bool]$Enabled) {
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
     Register-ScheduledTask -TaskName $taskName -TaskPath $script:TaskPath -Action $action -Trigger $trigger `
         -Principal $principal -Settings $settings -Description 'jupyter-for-share: サインイン時に全ユーザーのサーバーを起動' | Out-Null
-    Write-Ok "$me がサインインしたときに、全ユーザーのサーバー (管理用ウィンドウ) を自動で開くようにしました。"
+    Write-Ok "$me がサインインしたときに、全ユーザーのサーバー (サーバー管理ウィンドウ) を自動で開くようにしました。"
 }
 
 # ---- リソースモニター ----
@@ -910,33 +1055,61 @@ function Sync-FirewallRules($Config) {
 
 # ---- 他のフォルダへのアクセス禁止 ----
 # サーバー実行用アカウントのグループに「拒否」のアクセス権を付ける。
-# 対象 (protectedPaths の "auto"):
-#   - システムドライブ以外の固定ドライブ全体 (D:\ など)
-#   - システムドライブ直下の独自フォルダ (Windows / Program Files / Users など OS に必要なもの、
-#     このリポジトリを含むフォルダは除く)
-#   - C:\Users\Public
+# 対象 (protectedPaths の "auto") は、このリポジトリがどのドライブ・フォルダにあるかを見て決める:
+#   - リポジトリも Windows もないドライブ (D:\ など) … ドライブ全体
+#   - リポジトリがあるドライブ (例: E:\jupyter-for-share) … ドライブ直下からリポジトリまでの各階層で、
+#     リポジトリへ向かうフォルダ以外のすべて (ドライブやリポジトリの上の階層そのものは拒否しない)
+#   - システムドライブ (C:\) … 直下の独自フォルダ (Windows / Program Files / Users など OS に必要なものと、
+#     Python・リポジトリへ向かうフォルダは除く) と C:\Users\Public
 # 他のユーザーのプロファイル (C:\Users\<名前>) は Windows の既定で読めないので対象外。
 # このリポジトリのフォルダは Protect-RepoFolder で管理者専用にしてある。
 
+# Root から下をたどり、KeepPaths (とその上の階層) 以外の項目を返す
+function Get-SiblingTargets([string]$Root, [string[]]$KeepPaths, [string[]]$KeepNames = @()) {
+    $keep = @($KeepPaths | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') })
+    $result = @()
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue($Root)
+    while ($queue.Count -gt 0) {
+        $dir = [string]$queue.Dequeue()
+        # 隠し・システム属性の項目 (System Volume Information など) は対象外
+        foreach ($c in @(Get-ChildItem -LiteralPath $dir -ErrorAction SilentlyContinue)) {
+            $full = $c.FullName.TrimEnd('\')
+            if ($dir -eq $Root -and $KeepNames -contains $c.Name) { continue }
+            if (@($keep | Where-Object { $_ -ieq $full }).Count -gt 0) { continue }
+            if (@($keep | Where-Object { $_.StartsWith("$full\", [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
+                $queue.Enqueue($c.FullName)   # 残す場所へ向かう途中のフォルダ: 中を見る
+                continue
+            }
+            $result += $full
+        }
+    }
+    return $result
+}
+
 function Get-ProtectTargets($Config) {
     $repo = $script:RepoRoot.TrimEnd('\')
+    $repoDrive = [System.IO.Path]::GetPathRoot($repo).TrimEnd('\')
     $sysDrive = $env:SystemDrive
     $python = Find-BasePython $Config
+    $pythonDir = if ($python) { Split-Path -Parent $python } else { '' }
     $targets = @()
     foreach ($entry in @(Get-Value $Config.defaults 'protectedPaths' @('auto'))) {
         if ($entry -ne 'auto') { $targets += [string]$entry; continue }
 
-        Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {
-            if ($_.DeviceID -ne $sysDrive) { $targets += "$($_.DeviceID)\" }
+        foreach ($disk in @(Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=3')) {
+            $drive = [string]$disk.DeviceID           # 'E:'
+            $root = "$drive\"
+            $keepHere = @(@($repo, $pythonDir) | Where-Object { $_ -and $_.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) })
+            if ($drive -ieq $sysDrive) {
+                $targets += Get-SiblingTargets $root $keepHere @('Windows', 'Program Files', 'Program Files (x86)', 'Users', 'PerfLogs')
+                if ($env:PUBLIC) { $targets += $env:PUBLIC }
+            } elseif ($keepHere.Count -gt 0) {
+                $targets += Get-SiblingTargets $root $keepHere
+            } else {
+                $targets += $root
+            }
         }
-        $keep = @('Windows', 'Program Files', 'Program Files (x86)', 'Users', 'PerfLogs')
-        Get-ChildItem -LiteralPath "$sysDrive\" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            $dir = $_.FullName.TrimEnd('\')
-            $isAncestor = ($repo -eq $dir) -or $repo.StartsWith("$dir\", [StringComparison]::OrdinalIgnoreCase)
-            $hasPython = $python -and $python.StartsWith("$dir\", [StringComparison]::OrdinalIgnoreCase)
-            if (($keep -notcontains $_.Name) -and -not $isAncestor -and -not $hasPython) { $targets += $dir }
-        }
-        if ($env:PUBLIC) { $targets += $env:PUBLIC }
     }
     return @($targets | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -Unique)
 }
@@ -1023,6 +1196,14 @@ function Protect-Folders($Config, [switch]$Reapply) {
     # 最後まで処理が終わった記録があり、拒否も付いているフォルダは飛ばす
     # (付け直すと中の全ファイルを書き換えるため時間がかかる)。
     # 途中で中断した場所は記録がないので、次回もう一度最初から処理する。
+    # 以前は対象だったが今は対象外になった場所 (例: 旧バージョンが拒否を付けた、リポジトリのあるドライブの直下) は拒否を外す
+    $stale = @($applied | Where-Object { ($targets -notcontains $_) -and (Test-Path -LiteralPath $_) })
+    if ($stale.Count -gt 0) {
+        Write-Info "対象外になった次の場所の拒否を外します (ファイル数が多いと時間がかかります): $($stale -join ', ')"
+        Invoke-IcaclsParallel $stale @('/remove:d', "*$sid", '/Q', '/C')
+        $applied = @($applied | Where-Object { $stale -notcontains $_ })
+        Save-ProtectedApplied $applied
+    }
     $todo = @($targets | Where-Object { $Reapply -or ($applied -notcontains $_) -or -not (Test-HasDeny $_ $sid) })
 
     if ($todo.Count -eq 0) {
@@ -1098,9 +1279,7 @@ function Show-ProtectStatus($Config) {
 function Remove-UserLeftovers([string]$UserName, [string]$Folder) {
     $taskName = "jfs-$UserName"
     $account = "$($script:UserPrefix)$UserName"
-    $console = Get-ConsoleProcess $UserName
-    if ($console) { $console | Stop-Process -Force -ErrorAction SilentlyContinue }
-    Remove-Item -LiteralPath (Get-ConsoleRecordPath $UserName) -ErrorAction SilentlyContinue
+    Remove-Wanted (Read-Config) $UserName
     if ((Get-JfsTask $taskName) -or (Get-LocalUser -Name $account -ErrorAction SilentlyContinue)) {
         Stop-JfsTask $taskName $account "ユーザー '$UserName' の環境"
     }
@@ -1327,7 +1506,7 @@ function Test-ServiceTarget([string]$Label, [string]$TaskName, [string]$Account,
         $info = Get-ScheduledTaskInfo -InputObject $task
         if ($ConsoleUser) {
             Write-Check $true "起動用タスク $($script:TaskPath)$TaskName (状態: $($task.State))"
-            Write-Check ([bool](Get-ConsoleProcess $ConsoleUser)) "管理用ウィンドウ (開いていないときは 'jfs.cmd start $ConsoleUser')"
+            Write-Check ([bool](Get-HubProcess) -and (Test-Wanted (Get-Wanted) $ConsoleUser)) "サーバー管理ウィンドウで起動中 (起動していないときは 'jfs.cmd start $ConsoleUser')"
         } else {
             Write-Check ($task.State -ne 'Disabled') "自動起動タスク $($script:TaskPath)$TaskName (状態: $($task.State))"
         }
@@ -1354,6 +1533,21 @@ function Test-ServiceTarget([string]$Label, [string]$TaskName, [string]$Account,
         Write-Check $false "ファイアウォール規則 $RuleName がありません ('jfs.cmd firewall' で作り直せます)"
     }
     Show-LogTail $LogPath 10
+    # 権限まわりのエラーがログにあれば、前後の行と一緒に表示する
+    if ($LogPath -and (Test-Path -LiteralPath $LogPath)) {
+        $hits = @(Get-Content -LiteralPath $LogPath -Tail 3000 -Encoding UTF8 |
+            Select-String -Pattern 'not permitted|PermissionError|Permission denied|Access is denied|アクセスが拒否|WinError 5\b' -Context 2, 2 |
+            Select-Object -Last 5)
+        if ($hits.Count -gt 0) {
+            Write-Check $false 'ログに権限のエラーがあります (直近 5 件):'
+            foreach ($h in $hits) {
+                $h.Context.PreContext | ForEach-Object { Write-Host "       $_" }
+                Write-Host "     > $($h.Line)" -ForegroundColor Red
+                $h.Context.PostContext | ForEach-Object { Write-Host "       $_" }
+                Write-Host ''
+            }
+        }
+    }
 }
 
 function Invoke-Doctor($Config, [string]$UserName) {
@@ -1361,6 +1555,25 @@ function Invoke-Doctor($Config, [string]$UserName) {
     $py = Find-BasePython $Config
     Write-Check ([bool]$py) "Python: $py"
     Write-Check ([bool](Get-LocalGroup -Name $script:LocalGroup -ErrorAction SilentlyContinue)) "グループ $script:LocalGroup"
+
+    # リポジトリの場所と、その上の階層に拒否が付いていないか (付いているとサーバーが正しく動かない)
+    $repo = $script:RepoRoot.TrimEnd('\')
+    $letter = ([System.IO.Path]::GetPathRoot($repo)).TrimEnd('\').TrimEnd(':')
+    $vol = Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue
+    $fs = if ($vol) { [string]$vol.FileSystemType } else { '不明' }
+    Write-Check ($fs -in @('NTFS', 'ReFS', '不明')) "リポジトリ: $repo (ドライブ $($letter): / $fs)"
+    $groupSid = (Get-LocalGroup -Name $script:LocalGroup -ErrorAction SilentlyContinue).SID.Value
+    if ($groupSid) {
+        $dir = Split-Path -Parent $repo
+        while ($dir) {
+            if (Test-HasDeny $dir $groupSid) {
+                Write-Check $false "$dir にサーバー実行用アカウントへの拒否が付いています (リポジトリの上の階層)。'jfs.cmd protect' で外せます"
+            }
+            $parent = Split-Path -Parent $dir
+            if (-not $parent -or $parent -eq $dir) { break }
+            $dir = $parent
+        }
+    }
 
     $profiles = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue)
     foreach ($n in $profiles) {
@@ -1504,8 +1717,7 @@ try {
             Write-ServerFiles $cfg $u
             Sync-FirewallRules $cfg
             Register-UserTask $u
-            Stop-UserEnv $u
-            Start-UserEnv $u | Out-Null
+            Restart-UserEnv $u $cfg | Out-Null
             Show-UserUrls $cfg $u
         }
 
@@ -1537,17 +1749,18 @@ try {
 
         'start' {
             $cfg = Read-Config
-            foreach ($u in (Get-TargetUsers $cfg $Name)) { Start-UserEnv $u | Out-Null }
+            Start-Users $cfg $Name
         }
 
         'stop' {
             $cfg = Read-Config
-            foreach ($u in (Get-TargetUsers $cfg $Name)) { Stop-UserEnv $u }
+            Stop-Users $cfg $Name
         }
 
         'restart' {
             $cfg = Read-Config
-            foreach ($u in (Get-TargetUsers $cfg $Name)) { Stop-UserEnv $u; Start-UserEnv $u | Out-Null }
+            if (-not (Get-HubProcess)) { Start-Users $cfg $Name; break }
+            foreach ($u in (Get-TargetUsers $cfg $Name)) { Restart-UserEnv $u $cfg | Out-Null }
         }
 
         'url' {
@@ -1563,8 +1776,7 @@ try {
                 Set-Value $u 'token' (New-Token)
                 Save-Config $cfg
                 Write-ServerFiles $cfg $u
-                Stop-UserEnv $u
-                Start-UserEnv $u | Out-Null
+                Restart-UserEnv $u $cfg | Out-Null
                 Write-Ok '新しいトークンを発行しました。古い URL は使えなくなります。'
             }
             Show-UserUrls $cfg $u
@@ -1589,8 +1801,8 @@ try {
         'upgrade' {
             $cfg = Read-Config
             foreach ($u in (Get-TargetUsers $cfg $Name)) {
-                $wasRunning = [bool](Get-ConsoleProcess $u.name) -or (Test-PortListening ([int]$u.port))
-                Stop-UserEnv $u
+                $wasRunning = (Test-Wanted (Get-Wanted) $u.name) -or (Test-PortListening ([int]$u.port))
+                Stop-UserEnv $u $cfg
                 Install-JupyterLab $cfg $u -Upgrade
                 Register-VenvKernel $u
                 if ($wasRunning) { Start-UserEnv $u | Out-Null }
@@ -1604,7 +1816,7 @@ try {
                 $ans = Read-Host "ユーザー '$($u.name)' の venv を作り直します (追加したパッケージは消えます)。よろしいですか? [y/N]"
                 if ($ans -notmatch '^[yY]') { Write-Info '中止しました。'; break }
             }
-            Stop-UserEnv $u
+            Stop-UserEnv $u $cfg
             $venv = (Get-InstancePaths $u).Venv
             if (Test-Path -LiteralPath $venv) { Remove-Item -LiteralPath $venv -Recurse -Force }
             $sid = New-ServiceAccount (Get-AccountName $u) "jupyter-for-share: $($u.name)"
@@ -1646,9 +1858,8 @@ try {
             Sync-FirewallRules (Read-Config)
         }
 
-        'serve' {
-            $cfg = Read-Config
-            Invoke-Serve $cfg (Get-RequiredUser $cfg $Name)
+        'hub' {
+            Invoke-Hub
         }
 
         'refresh' {
@@ -1695,7 +1906,7 @@ try {
     }
 } catch {
     Write-Host "[x] $($_.Exception.Message)" -ForegroundColor Red
-    if ($PauseAtEnd -or $Command -eq 'serve') { Read-Host 'Enter キーで終了します' | Out-Null }
+    if ($PauseAtEnd -or $Command -eq 'hub') { Read-Host 'Enter キーで終了します' | Out-Null }
     exit 1
 }
 if ($PauseAtEnd) { Read-Host 'Enter キーで終了します' | Out-Null }

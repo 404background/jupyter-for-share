@@ -54,6 +54,8 @@ function Invoke-Setup {
     if ($Domain) { Set-Value $cfg.defaults 'domain' $Domain }
     Save-Config $cfg
     Write-Ok "設定ファイル: $script:ConfigPath"
+    Write-Ok "インストール先: $script:RepoRoot (ユーザー環境はこの中の user フォルダに作られます)"
+    Assert-AclFileSystem $script:RepoRoot
 
     # ---- Python ----
     $py = Find-BasePython $cfg
@@ -121,7 +123,7 @@ function Invoke-Setup {
   1. ユーザー環境を作成する (例: alice さん用。ポートは自動で決まります)
        jfs.cmd add alice
   2. 表示された URL を本人に伝え、別の PC のブラウザで開いてもらう
-     (ユーザーごとに管理用ウィンドウが開きます。閉じるとそのユーザーのサーバーは停止します)
+     (全ユーザー共通のサーバー管理ウィンドウが 1 つ開きます。閉じると全員のサーバーが停止します)
      PC の再起動後は 'jfs.cmd start' で開き直すか、'jfs.cmd autostart on' でサインイン時に自動で開けます
   3. 一覧・停止などは 'jfs.cmd help' を参照
   4. 別の PC からつながらない場合は 'jfs.cmd network' (ネットワーク・ファイアウォール設定の確認と変更)

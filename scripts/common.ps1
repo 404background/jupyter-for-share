@@ -288,8 +288,19 @@ function Protect-RepoFolder {
         "*$(Get-CurrentUserSid):(OI)(CI)F", "*$(Get-LocalGroupSid):(RX)", '/Q') -Quiet
 }
 
+# アクセス権 (ACL) を設定できるファイルシステムか確認する (FAT32 / exFAT の USB ドライブなどは不可)
+function Assert-AclFileSystem([string]$Path) {
+    $letter = ([System.IO.Path]::GetPathRoot($Path)).TrimEnd('\').TrimEnd(':')
+    $vol = Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue
+    if ($vol -and $vol.FileSystemType -notin @('NTFS', 'ReFS')) {
+        throw ("$($letter): ドライブのファイルシステムは $($vol.FileSystemType) のため、ユーザーごとのアクセス制限を設定できません。" +
+               'jupyter-for-share は NTFS のドライブ (C: など) に置いてください。')
+    }
+}
+
 # ユーザー環境の親フォルダ: 管理者だけがフル権限。サーバー用ユーザーはこのフォルダ自体の参照のみ
 function Initialize-InstancesRoot($Config) {
+    Assert-AclFileSystem $script:RepoRoot
     Protect-RepoFolder
     $root = Get-InstancesRoot $Config
     if ($root.Length -le 3) { throw "instancesRoot にドライブ直下 ($root) は指定できません。" }
