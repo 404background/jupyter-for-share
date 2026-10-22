@@ -10,7 +10,8 @@
     "labLocale": "ja_JP",
     "extraServerPackages": [],
     "venvPackages": [],
-    "protectedPaths": ["auto"]
+    "protectedPaths": ["auto"],
+    "protectLevel": "full"
   },
   "monitor": {
     "enabled": false,

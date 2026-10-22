@@ -58,9 +58,13 @@ function Invoke-Setup {
     Assert-AclFileSystem $script:RepoRoot
 
     # ---- Python ----
-    $py = Find-BasePython $cfg
-    if (-not $py) {
+    # まずインストール済みの Python を探し、使えるものがあればそれを使う
+    $py = Find-BasePython $cfg -Report
+    if ($py) {
+        Write-Ok "インストール済みの Python を使います: $py ($(Get-PythonVersion $py))"
+    } else {
         # サーバー用ユーザーからも使えるよう、全ユーザー向け (C:\Program Files) にインストールする
+        Write-Info '使える Python (全ユーザー向け・3.9 以上) がないため、インストールします。'
         Install-WithWinget 'Python.Python.3.12' @('--override', '/quiet InstallAllUsers=1 PrependPath=1 Include_launcher=1 Include_test=0')
         $py = Find-BasePython $cfg
         if (-not $py) { throw 'Python のインストールを確認できませんでした。' }
@@ -72,9 +76,14 @@ function Invoke-Setup {
     Write-Ok "Python: $py"
 
     # ---- Git ----
-    $git = Join-Path $env:ProgramFiles 'Git\cmd\git.exe'
-    if (-not (Test-Path -LiteralPath $git)) {
+    # まずインストール済みの Git を探す (PATH にあればそれを使う)
+    $git = (Get-Command git.exe -ErrorAction SilentlyContinue).Source
+    if (-not $git) { $git = Join-Path $env:ProgramFiles 'Git\cmd\git.exe' }
+    if (Test-Path -LiteralPath $git) {
+        Write-Ok "インストール済みの Git を使います: $git"
+    } else {
         Install-WithWinget 'Git.Git' @('--silent')
+        $git = Join-Path $env:ProgramFiles 'Git\cmd\git.exe'
     }
     if (Test-Path -LiteralPath $git) { Write-Ok "Git: $git" }
     else { Write-Warn 'Git for Windows を確認できませんでした。git clone を使う場合は手動でインストールしてください。' }
@@ -87,7 +96,7 @@ function Invoke-Setup {
     Write-Ok "ユーザー環境を作る場所: $root"
 
     if (-not $SkipProtect) {
-        & (Join-Path $PSScriptRoot 'jfs.ps1') protect -Background
+        & (Join-Path $PSScriptRoot 'jfs.ps1') protect
         if ($LASTEXITCODE -ne 0) { Write-Warn "アクセス禁止の設定に失敗しました。後で 'jfs.cmd protect' を実行してください。" }
     }
 
@@ -134,7 +143,8 @@ try {
     Invoke-Setup
 } catch {
     Write-Host "[x] $($_.Exception.Message)" -ForegroundColor Red
-    if ($PauseAtEnd) { Read-Host 'Enter キーで終了します' | Out-Null }
+    if ($PauseAtEnd) { Complete-Window -Failed }
     exit 1
 }
-if ($PauseAtEnd) { Read-Host 'Enter キーで終了します' | Out-Null }
+# 次の手順を読めるように、セットアップの結果は Enter で閉じる
+if ($PauseAtEnd) { Complete-Window -Keep }

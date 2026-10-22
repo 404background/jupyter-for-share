@@ -339,13 +339,30 @@ def create_server(bind, port, handler):
     return ThreadingHTTPServer(("0.0.0.0" if bind in ("", "*", "::") else bind, port), handler)
 
 
+def watch_heartbeat(path, timeout=20):
+    """サーバー管理ウィンドウが更新するハートビートファイルが止まったら終了する (ウィンドウを閉じたら止まるように)"""
+    while True:
+        time.sleep(2)
+        try:
+            age = time.time() - os.path.getmtime(path)
+        except OSError:
+            age = float("inf")
+        if age > timeout:
+            print("monitor: サーバー管理ウィンドウが閉じられたため終了します", flush=True)
+            os._exit(0)
+
+
 def main():
     ap = argparse.ArgumentParser(description="jupyter-for-share resource monitor")
     ap.add_argument("--bind", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--users", default="", help="ユーザー一覧 (users.json)")
     ap.add_argument("--disk", default="", help="使用量を表示するフォルダ")
+    ap.add_argument("--heartbeat", default="", help="サーバー管理ウィンドウのハートビートファイル")
     args = ap.parse_args()
+
+    if args.heartbeat:
+        threading.Thread(target=watch_heartbeat, args=(args.heartbeat,), daemon=True).start()
 
     sampler = Sampler(args.users, args.disk)
     sampler.start()

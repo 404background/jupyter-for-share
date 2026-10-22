@@ -56,12 +56,12 @@ $script:CommandHelp = @{
     'refresh'      = "jfs.cmd refresh`n  全ユーザーの起動用ファイル・設定・起動用タスクを作り直します (更新後に setup.cmd から自動で実行されます)。"
     'upgrade'      = "jfs.cmd upgrade [ユーザー名]`n  JupyterLab 本体を最新版に更新します。省略で全員分。venv に入れたパッケージはそのまま。"
     'reset-venv'   = "jfs.cmd reset-venv <ユーザー名> [-Force]`n  venv を作り直します (pip で入れたパッケージは消えます。work フォルダのファイルは残ります)。"
-    'monitor'      = "jfs.cmd monitor [-Port 番号] [-AllowFrom 範囲]`n  リソースモニター (CPU / メモリ / GPU) を設置・更新して起動します。既定のポートは 8000。"
+    'monitor'      = "jfs.cmd monitor [-Port 番号] [-AllowFrom 範囲]`n  リソースモニター (CPU / メモリ / GPU) を設置・更新します。既定のポートは 8000。`n  モニターは jfs.cmd start のサーバー管理ウィンドウの中で、ユーザーのサーバーと一緒に動きます。"
     'monitor-stop' = "jfs.cmd monitor-stop`n  リソースモニターを停止します (再開は jfs.cmd monitor)。"
     'doctor'       = "jfs.cmd doctor [ユーザー名]`n  ユーザー名を付けると、そのユーザーの実行用アカウントとして各フォルダを読めるかのテストも行います。`n  つながらないときの診断です。アカウント・自動起動タスク・待ち受けポート・HTTP 応答・`n  ファイアウォール・ネットワークの種類・ログを確認し、問題のある箇所に [NG] を表示します。"
     'network'      = "jfs.cmd network [-SetPrivate] [-Yes]`n  他の PC から接続できないとき用。ネットワークとファイアウォールの現状を確認して表示し、`n  必要な変更 (ポートの許可・ping の許可・名前解決の許可・python をブロックする規則の無効化) を`n  一覧にしてから、確認のうえ適用します。適用後にもう一度状態を表示します。`n  -SetPrivate: 「パブリック」の LAN 接続を「プライベート」に変更する`n  -Yes: 確認せずに適用する"
     'firewall'     = "jfs.cmd firewall`n  Windows ファイアウォール規則を設定ファイル (servers.json) に合わせて作り直します。"
-    'protect'      = "jfs.cmd protect [-Background] [-Force]`njfs.cmd protect -Status`n  サーバー実行用アカウントから他のフォルダへのアクセスを禁止します。設定済みの場所は飛ばします。`n  -Background: 裏で実行 / -Force: 設定済みの場所も付け直す / -Status: 進み具合を表示"
+    'protect'      = "jfs.cmd protect [-Force]`njfs.cmd protect -Status`n  サーバー実行用アカウントから他のフォルダへのアクセスを禁止します。このウィンドウで実行し、終わるまで進み具合を表示します。`n  設定済みの場所は飛ばします。-Force: 設定済みの場所も付け直す / -Status: 設定状況を表示"
     'unprotect'    = "jfs.cmd unprotect`n  protect で設定したアクセス禁止を解除します。"
 }
 
@@ -91,7 +91,7 @@ jupyter-for-share 管理コマンド
   jfs.cmd reset-venv <ユーザー名>       venv を作り直す
 
 リソースモニター (CPU / メモリ / GPU)
-  jfs.cmd monitor [-Port 8000]          設置・更新して起動
+  jfs.cmd monitor [-Port 8000]          設置・更新 (サーバー管理ウィンドウの中で動く)
   jfs.cmd monitor-stop                  停止
 
 サーバー全体
@@ -100,7 +100,7 @@ jupyter-for-share 管理コマンド
   jfs.cmd doctor [ユーザー名]           つながらないときの診断
   jfs.cmd network [-SetPrivate]         他の PC から接続できるようにネットワーク設定を確認・変更
   jfs.cmd firewall                      ファイアウォール規則を更新
-  jfs.cmd protect [-Background]         他のフォルダへのアクセスを禁止 (-Status で進み具合)
+  jfs.cmd protect                       他のフォルダへのアクセスを禁止 (-Status で設定状況)
   jfs.cmd unprotect                     アクセス禁止を解除
 
   jfs.cmd uninstall                     Windows に加えた変更をすべて元に戻す (uninstall.cmd と同じ)
@@ -173,6 +173,7 @@ function Get-MonitorPaths {
         Log       = Join-Path $rt 'monitor.log'
         RunCmd    = Join-Path $rt 'run.cmd'
         UsersFile = Join-Path $rt 'users.json'
+        Heartbeat = Join-Path $rt 'heartbeat'
     }
 }
 
@@ -296,7 +297,9 @@ function Get-BasePythonOrThrow($Config) {
 function Install-JupyterLab($Config, $UserEnv, [switch]$Upgrade) {
     $p = Get-InstancePaths $UserEnv
     $py = Join-Path $p.LabVenv 'Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $py)) {
+    if (Test-Path -LiteralPath $py) {
+        Write-Info "JupyterLab 用の venv は作成済みです: $($p.LabVenv)"
+    } else {
         Invoke-Native (Get-BasePythonOrThrow $Config) @('-m', 'venv', $p.LabVenv) -Quiet
     }
     $pkgs = @('jupyterlab')
@@ -304,11 +307,17 @@ function Install-JupyterLab($Config, $UserEnv, [switch]$Upgrade) {
     if ($locale -and $locale -notmatch '^en') { $pkgs += "jupyterlab-language-pack-$($locale.Replace('_', '-'))" }
     $pkgs += @(Get-Value $Config.defaults 'extraServerPackages' @())
 
-    Write-Info "JupyterLab をインストールしています ($($UserEnv.name))。数分かかります..."
-    Invoke-Native $py @('-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', 'pip') -Quiet
-    $a = @('-m', 'pip', 'install', '--disable-pip-version-check')
-    if ($Upgrade) { $a += '--upgrade' }
-    Invoke-Native $py ($a + $pkgs) -Quiet
+    # 入っていないものだけ入れる (-Upgrade のときは全部を最新にする)
+    $todo = if ($Upgrade) { $pkgs } else { @(Get-MissingPackages $py $pkgs) }
+    if ($todo.Count -eq 0) {
+        Write-Ok "JupyterLab と関連パッケージはインストール済みです ($($pkgs -join ', '))。"
+    } else {
+        Write-Info "JupyterLab をインストールしています ($($UserEnv.name): $($todo -join ', '))。数分かかります..."
+        Invoke-Native $py @('-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', 'pip') -Quiet
+        $a = @('-m', 'pip', 'install', '--disable-pip-version-check')
+        if ($Upgrade) { $a += '--upgrade' }
+        Invoke-Native $py ($a + $todo) -Quiet
+    }
 
     if ($locale) {
         $dir = Join-Path $p.LabVenv 'share\jupyter\lab\settings'
@@ -316,18 +325,28 @@ function Install-JupyterLab($Config, $UserEnv, [switch]$Upgrade) {
         $json = '{ "@jupyterlab/translation-extension:plugin": { "locale": "' + $locale + '" } }'
         [System.IO.File]::WriteAllText((Join-Path $dir 'overrides.json'), $json)
     }
-    Write-Ok 'JupyterLab のインストールが完了しました。'
+    Write-Ok 'JupyterLab の準備ができました。'
 }
 
 # 利用者がパッケージを入れる venv を作り、JupyterLab の既定カーネル (python3) にする
 function Install-UserVenv($Config, $UserEnv) {
     $p = Get-InstancePaths $UserEnv
-    Write-Info "venv を作成しています: $($p.Venv)"
-    Invoke-Native (Get-BasePythonOrThrow $Config) @('-m', 'venv', $p.Venv) -Quiet
     $py = Join-Path $p.Venv 'Scripts\python.exe'
-    Invoke-Native $py @('-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', 'pip') -Quiet
+    if (Test-Path -LiteralPath $py) {
+        Write-Info "venv は作成済みです: $($p.Venv)"
+    } else {
+        Write-Info "venv を作成しています: $($p.Venv)"
+        Invoke-Native (Get-BasePythonOrThrow $Config) @('-m', 'venv', $p.Venv) -Quiet
+    }
     $pkgs = @('ipykernel') + @(Get-Value $Config.defaults 'venvPackages' @())
-    Invoke-Native $py (@('-m', 'pip', 'install', '--disable-pip-version-check') + $pkgs) -Quiet
+    $todo = @(Get-MissingPackages $py $pkgs)
+    if ($todo.Count -eq 0) {
+        Write-Ok "venv のパッケージはインストール済みです ($($pkgs -join ', '))。"
+    } else {
+        Write-Info "venv にインストールしています: $($todo -join ', ')"
+        Invoke-Native $py @('-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', 'pip') -Quiet
+        Invoke-Native $py (@('-m', 'pip', 'install', '--disable-pip-version-check') + $todo) -Quiet
+    }
     Register-VenvKernel $UserEnv
     Write-Ok "venv の準備ができました (パッケージ: $($pkgs -join ', '))。"
 }
@@ -608,7 +627,7 @@ function Get-TaskStatus([string]$TaskName, [int]$P) {
     if ($task.State -eq 'Disabled') { return '停止' }
     if (Test-PortListening $P) { return '起動中' }
     if ($task.State -eq 'Running') { return '起動処理中' }
-    return '停止 (自動起動待ち)'
+    return "停止 ('jfs.cmd start' のサーバー管理ウィンドウで動きます)"
 }
 
 function Register-UserTask($UserEnv) {
@@ -862,6 +881,28 @@ function Stop-Users($Config, [string]$UserName) {
     }
 }
 
+# サーバー管理ウィンドウで動かしているもの (ユーザーのサーバー・リソースモニター) 1 つ分の処理:
+# ハートビートを更新し、止まっていたら (10 秒おいて) 起動し直す
+function Update-ManagedTask($St, [string]$Label) {
+    [System.IO.File]::WriteAllText($St.Heartbeat, (Get-Date).ToString('o'))
+    $task = Get-JfsTask $St.Task
+    $stateName = if ($task) { [string]$task.State } else { 'Missing' }
+    if ($stateName -eq 'Running' -or ((Get-Date) - $St.StartedAt).TotalSeconds -lt 10) { return }
+    if ($St.Running) {
+        $info = Get-ScheduledTaskInfo -TaskPath $script:TaskPath -TaskName $St.Task -ErrorAction SilentlyContinue
+        $result = if ($info) { Get-TaskResultText $info.LastTaskResult } else { '不明' }
+        Write-UserLine $Label "[jupyter-for-share] 停止しました (結果: $result)。10 秒後に再起動します。"
+        $St.Running = $false
+        $St.NextStart = (Get-Date).AddSeconds(10)
+    }
+    if ((Get-Date) -ge $St.NextStart) {
+        if ($task -and $stateName -eq 'Disabled') { Enable-ScheduledTask -InputObject $task | Out-Null }
+        Start-ScheduledTask -TaskPath $script:TaskPath -TaskName $St.Task
+        $St.Running = $true
+        $St.StartedAt = Get-Date
+    }
+}
+
 # サーバー管理ウィンドウの本体 (jfs.ps1 hub)
 function Invoke-Hub {
     if (Get-HubProcess) { throw 'サーバー管理ウィンドウは既に開いています。' }
@@ -877,12 +918,20 @@ function Invoke-Hub {
     Write-Host ('-' * 70)
 
     $states = @{}      # ユーザー名 → 状態 (起動中か、ログの読み込み位置など)
+    $monitor = $null   # リソースモニターの状態
     $cfg = Read-Config
     $lastConfigRead = Get-Date
     $everRan = $false
     try {
         Repair-AncestorDenies $cfg -Wait
         Grant-AncestorAccess
+        try {
+            $pending = @(Get-ProtectTargets $cfg | Where-Object { (Get-ProtectedApplied $cfg) -notcontains $_ })
+            if ($pending.Count -gt 0) {
+                Write-Warn "アクセス禁止がまだ設定されていない場所が $($pending.Count) か所あります (例: $(@($pending | Select-Object -First 3) -join ', '))。"
+                Write-Warn "別のウィンドウで 'jfs.cmd protect' を実行してください。"
+            }
+        } catch { }
         while ($true) {
             if (((Get-Date) - $lastConfigRead).TotalSeconds -ge 5) { $cfg = Read-Config; $lastConfigRead = Get-Date }
             $wanted = Get-Wanted
@@ -919,7 +968,7 @@ function Invoke-Hub {
                     }
                     $paths = Get-InstancePaths $u
                     $st = [pscustomobject]@{
-                        Active = $true; Task = (Get-TaskName $u); Paths = $paths; Port = [int]$u.port
+                        Active = $true; Task = (Get-TaskName $u); Paths = $paths; Port = [int]$u.port; Heartbeat = $paths.Heartbeat
                         ServerTail = (New-LogTail $paths.Log); CommandTail = (New-LogTail $paths.CommandLog)
                         Running = $false; StartedAt = [datetime]::MinValue; NextStart = (Get-Date)
                     }
@@ -927,26 +976,27 @@ function Invoke-Hub {
                     Write-UserLine $name "[jupyter-for-share] 起動します (ポート $($u.port) / ログ: $($paths.Log))"
                 }
 
-                [System.IO.File]::WriteAllText($st.Paths.Heartbeat, (Get-Date).ToString('o'))
-                $task = Get-JfsTask $st.Task
-                $stateName = if ($task) { [string]$task.State } else { 'Missing' }
-                if ($stateName -ne 'Running' -and ((Get-Date) - $st.StartedAt).TotalSeconds -ge 10) {
-                    if ($st.Running) {
-                        $info = Get-ScheduledTaskInfo -TaskPath $script:TaskPath -TaskName $st.Task -ErrorAction SilentlyContinue
-                        $result = if ($info) { Get-TaskResultText $info.LastTaskResult } else { '不明' }
-                        Write-UserLine $name "[jupyter-for-share] サーバーが停止しました (結果: $result)。10 秒後に再起動します。"
-                        $st.Running = $false
-                        $st.NextStart = (Get-Date).AddSeconds(10)
-                    }
-                    if ((Get-Date) -ge $st.NextStart) {
-                        if ($task -and $stateName -eq 'Disabled') { Enable-ScheduledTask -InputObject $task | Out-Null }
-                        Start-ScheduledTask -TaskPath $script:TaskPath -TaskName $st.Task
-                        $st.Running = $true
-                        $st.StartedAt = Get-Date
-                    }
-                }
+                Update-ManagedTask $st $name
                 foreach ($line in (Read-LogTail $st.ServerTail)) { Write-UserLine $name $line }
                 foreach ($line in (Read-LogTail $st.CommandTail)) { Write-UserLine $name $line 'command' }
+            }
+            # リソースモニター (設置済みなら、ユーザーのサーバーと一緒に動かす)
+            $monitorOn = $running -gt 0 -and [bool](Get-Value $cfg.monitor 'enabled' $false) -and [bool](Get-JfsTask 'jfs-monitor')
+            if ($monitorOn) {
+                if (-not $monitor) {
+                    $mp = Get-MonitorPaths
+                    $monitor = [pscustomobject]@{
+                        Task = 'jfs-monitor'; Heartbeat = $mp.Heartbeat; Tail = (New-LogTail $mp.Log)
+                        Running = $false; StartedAt = [datetime]::MinValue; NextStart = (Get-Date)
+                    }
+                    Write-UserLine 'monitor' "[jupyter-for-share] リソースモニターを起動します (ポート $($cfg.monitor.port))"
+                }
+                Update-ManagedTask $monitor 'monitor'
+                foreach ($line in (Read-LogTail $monitor.Tail)) { Write-UserLine 'monitor' $line }
+            } elseif ($monitor) {
+                Remove-Item -LiteralPath $monitor.Heartbeat -ErrorAction SilentlyContinue
+                Stop-JfsTask 'jfs-monitor' $script:MonitorAccount 'リソースモニター'
+                $monitor = $null
             }
             $Host.UI.RawUI.WindowTitle = "jupyter-for-share サーバー ($running 人) - 閉じると全員のサーバーが停止します"
             if ($everRan -and $running -eq 0) {
@@ -965,6 +1015,10 @@ function Invoke-Hub {
             Remove-Item -LiteralPath $st.Paths.Heartbeat -ErrorAction SilentlyContinue
             $u = Find-UserEnv $cfg $name
             if ($u) { Stop-JfsTask $st.Task (Get-AccountName $u) "ユーザー '$name' の環境" }
+        }
+        if ($monitor) {
+            Remove-Item -LiteralPath $monitor.Heartbeat -ErrorAction SilentlyContinue
+            Stop-JfsTask 'jfs-monitor' $script:MonitorAccount 'リソースモニター'
         }
         Remove-Item -LiteralPath $hp.Record -ErrorAction SilentlyContinue
         $Host.UI.RawUI.WindowTitle = $oldTitle
@@ -1005,7 +1059,12 @@ function Install-Monitor($Config) {
         Write-Info 'リソースモニター用の venv を作成しています...'
         Invoke-Native (Get-BasePythonOrThrow $Config) @('-m', 'venv', $m.Venv) -Quiet
     }
-    Invoke-Native $py @('-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', 'pip', 'psutil') -Quiet
+    if (@(Get-MissingPackages $py @('psutil')).Count -gt 0) {
+        Write-Info 'リソースモニター用の psutil をインストールしています...'
+        Invoke-Native $py @('-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', 'pip', 'psutil') -Quiet
+    } else {
+        Write-Info 'リソースモニター用の psutil はインストール済みです。'
+    }
 
     $bind = [string](Get-Value $Config.defaults 'bindAddress' '0.0.0.0')
     $cmd = @'
@@ -1017,19 +1076,21 @@ set "PYTHONUTF8=1"
 set "PYTHONUNBUFFERED=1"
 if exist "@@LOG@@" for %%F in ("@@LOG@@") do if %%~zF GTR 10485760 move /y "@@LOG@@" "@@LOG@@.1" >nul
 echo ===== %DATE% %TIME% start >> "@@LOG@@"
-"@@PY@@" "@@SCRIPT@@" --bind @@BIND@@ --port @@PORT@@ --users "@@USERS@@" --disk "@@DISK@@" >> "@@LOG@@" 2>&1
+"@@PY@@" "@@SCRIPT@@" --bind @@BIND@@ --port @@PORT@@ --users "@@USERS@@" --disk "@@DISK@@" --heartbeat "@@HB@@" >> "@@LOG@@" 2>&1
 exit /b %ERRORLEVEL%
 '@
     $cmd = Expand-Template $cmd @{
         TMP = $m.Tmp; LOG = $m.Log; PY = $py; SCRIPT = $m.Script; BIND = $bind
         PORT = [string][int]$Config.monitor.port; USERS = $m.UsersFile; DISK = (Get-InstancesRoot $Config)
+        HB = $m.Heartbeat
     }
     Write-BatchFile $m.RunCmd $cmd
 
     Set-Value $Config.monitor 'enabled' $true
     Save-Config $Config   # users.json も書き出される
+    # PC の起動時には動かさず、サーバー管理ウィンドウ (jfs.cmd start) の中でだけ動かす
     Register-JfsTask 'jfs-monitor' $script:MonitorAccount $m.RunCmd $m.Dir `
-        "jupyter-for-share: resource monitor (port $($Config.monitor.port))"
+        "jupyter-for-share: resource monitor (port $($Config.monitor.port))" -OnDemand
 }
 
 # ---- 接続先の表示 ----
@@ -1106,15 +1167,20 @@ function Sync-FirewallRules($Config) {
 # このリポジトリのフォルダは Protect-RepoFolder で管理者専用にしてある。
 
 # Root から下をたどり、KeepPaths (とその上の階層) 以外の項目を返す
-function Get-SiblingTargets([string]$Root, [string[]]$KeepPaths, [string[]]$KeepNames = @()) {
+function Get-SiblingTargets([string]$Root, [string[]]$KeepPaths, [string[]]$KeepNames = @(), [switch]$IncludeHidden) {
     $keep = @($KeepPaths | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') })
     $result = @()
     $queue = New-Object System.Collections.Queue
     $queue.Enqueue($Root)
     while ($queue.Count -gt 0) {
         $dir = [string]$queue.Dequeue()
-        # 隠し・システム属性の項目 (System Volume Information など) は対象外
-        foreach ($c in @(Get-ChildItem -LiteralPath $dir -ErrorAction SilentlyContinue)) {
+        # システム属性の項目 (System Volume Information・ごみ箱など) は対象外。隠し項目は -IncludeHidden のときだけ対象
+        $items = if ($IncludeHidden) {
+            @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | Where-Object { -not ($_.Attributes -band [System.IO.FileAttributes]::System) })
+        } else {
+            @(Get-ChildItem -LiteralPath $dir -ErrorAction SilentlyContinue)
+        }
+        foreach ($c in $items) {
             $full = $c.FullName.TrimEnd('\')
             if ($dir -eq $Root -and $KeepNames -contains $c.Name) { continue }
             if (@($keep | Where-Object { $_ -ieq $full }).Count -gt 0) { continue }
@@ -1146,9 +1212,11 @@ function Get-ProtectTargets($Config) {
                 $targets += Get-SiblingTargets $root $keepHere @('Windows', 'Program Files', 'Program Files (x86)', 'Users', 'PerfLogs')
                 if ($env:PUBLIC) { $targets += $env:PUBLIC }
             } elseif ($keepHere.Count -gt 0) {
-                $targets += Get-SiblingTargets $root $keepHere
+                $targets += Get-SiblingTargets $root $keepHere @() -IncludeHidden
             } else {
+                # ドライブ全体を 1 回で処理すると時間がかかるので、ドライブ直下そのものと、直下の項目ごとに分けて並列に処理する
                 $targets += $root
+                $targets += Get-SiblingTargets $root @() @() -IncludeHidden
             }
         }
     }
@@ -1196,37 +1264,46 @@ function Test-HasDeny([string]$Path, [string]$Sid) {
     return $false
 }
 
-# icacls をフォルダごとに並列で実行し、終わるまで経過を表示する
-function Invoke-IcaclsParallel([string[]]$Targets, [string[]]$IcaclsArgs) {
-    $jobs = @()
-    foreach ($t in $Targets) {
-        # "D:\" のように \ で終わるパスは、引用符の直前の \ がエスケープ扱いされるので \ を重ねる
-        $quoted = $t
-        if ($quoted.EndsWith('\')) { $quoted += '\' }
-        $out = [System.IO.Path]::GetTempFileName()
-        $proc = Start-Process -FilePath 'icacls.exe' -ArgumentList (@("`"$quoted`"") + $IcaclsArgs) `
-            -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err"
-        $null = $proc.Handle   # 終了コードを後で取得するために必要
-        $jobs += [pscustomobject]@{ Target = $t; Proc = $proc; Out = $out }
-    }
+# icacls を場所ごとに並列で (同時に最大 MaxParallel 個) 実行し、終わるまで経過を表示する。
+# ArgsFor を渡すと、場所ごとに icacls の引数を変えられる (フォルダとファイルで付ける内容が違うときなど)
+function Invoke-IcaclsParallel([string[]]$Targets, [string[]]$IcaclsArgs, [scriptblock]$ArgsFor = $null, [int]$MaxParallel = 8) {
+    $queue = New-Object System.Collections.Queue
+    foreach ($t in $Targets) { $queue.Enqueue($t) }
+    $total = $queue.Count
+    $running = @()
+    $done = 0
     $started = Get-Date
     $lastReport = $started
-    while (@($jobs | Where-Object { -not $_.Proc.HasExited }).Count -gt 0) {
-        Start-Sleep -Seconds 2
-        if (((Get-Date) - $lastReport).TotalSeconds -ge 30) {
+    while ($queue.Count -gt 0 -or $running.Count -gt 0) {
+        while ($queue.Count -gt 0 -and $running.Count -lt $MaxParallel) {
+            $t = [string]$queue.Dequeue()
+            $a = if ($ArgsFor) { @(& $ArgsFor $t) } else { $IcaclsArgs }
+            # "D:\" のように \ で終わるパスは、引用符の直前の \ がエスケープ扱いされるので \ を重ねる
+            $quoted = $t
+            if ($quoted.EndsWith('\')) { $quoted += '\' }
+            $out = [System.IO.Path]::GetTempFileName()
+            $proc = Start-Process -FilePath 'icacls.exe' -ArgumentList (@("`"$quoted`"") + $a) `
+                -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+            $null = $proc.Handle   # 終了コードを後で取得するために必要
+            $running += [pscustomobject]@{ Target = $t; Proc = $proc; Out = $out }
+        }
+        Start-Sleep -Milliseconds 500
+        foreach ($j in @($running | Where-Object { $_.Proc.HasExited })) {
+            $j.Proc.WaitForExit()
+            if ($j.Proc.ExitCode -ne 0) {
+                # /C 指定なので、一部のファイルで失敗しても残りは処理されている
+                $msg = (Get-Content -LiteralPath $j.Out, "$($j.Out).err" -ErrorAction SilentlyContinue | Select-Object -Last 3) -join ' / '
+                Write-Warn "$($j.Target): 一部のファイルを処理できませんでした ($msg)"
+            }
+            Remove-Item -LiteralPath $j.Out, "$($j.Out).err" -ErrorAction SilentlyContinue
+            $done++
+        }
+        $running = @($running | Where-Object { -not $_.Proc.HasExited })
+        if ($total -gt 1 -and ((Get-Date) - $lastReport).TotalSeconds -ge 30) {
             $lastReport = Get-Date
-            $running = @($jobs | Where-Object { -not $_.Proc.HasExited } | ForEach-Object { $_.Target })
-            Write-Info ("処理中 ({0} 分経過): {1}" -f [int]((Get-Date) - $started).TotalMinutes, ($running -join ', '))
+            Write-Info ("処理中: {0}/{1} か所完了 ({2} 分経過)。処理中の場所: {3}" -f $done, $total,
+                [int]((Get-Date) - $started).TotalMinutes, (@($running | ForEach-Object { $_.Target }) -join ', '))
         }
-    }
-    foreach ($j in $jobs) {
-        $j.Proc.WaitForExit()
-        if ($j.Proc.ExitCode -ne 0) {
-            # /C 指定なので、一部のファイルで失敗しても残りは処理されている
-            $msg = (Get-Content -LiteralPath $j.Out, "$($j.Out).err" -ErrorAction SilentlyContinue | Select-Object -Last 3) -join ' / '
-            Write-Warn "$($j.Target): 一部のファイルを処理できませんでした ($msg)"
-        }
-        Remove-Item -LiteralPath $j.Out, "$($j.Out).err" -ErrorAction SilentlyContinue
     }
 }
 
@@ -1307,7 +1384,19 @@ function Protect-Folders($Config, [switch]$Reapply) {
     Write-Info 'サーバー実行用アカウントから次のフォルダへのアクセスを禁止します。'
     Write-Info '中のファイル数が多いと時間がかかります (初回のみ。2 回目以降は設定済みの場所を飛ばします):'
     $todo | ForEach-Object { Write-Host "    $_" }
-    Invoke-IcaclsParallel $todo @('/deny', "*$($sid):(OI)(CI)F", '/Q', '/C')
+    # ドライブ直下そのもの: そのフォルダだけ (中は直下のフォルダごとに並列で処理する)
+    # フォルダ: protectLevel が full なら中のファイルにも、folders ならフォルダにだけ引き継ぐ
+    # ファイル: そのファイルだけ
+    $level = [string](Get-Value $Config.defaults 'protectLevel' 'full')
+    $folderAce = if ($level -eq 'folders') { '(CI)F' } else { '(OI)(CI)F' }
+    $argsFor = {
+        param($t)
+        if ($t -match '^[A-Za-z]:\\$') { $ace = 'F' }
+        elseif (Test-Path -LiteralPath $t -PathType Leaf) { $ace = 'F' }
+        else { $ace = $folderAce }
+        @('/deny', "*$($sid):$ace", '/Q', '/C')
+    }.GetNewClosure()
+    Invoke-IcaclsParallel $todo @() $argsFor
 
     foreach ($t in $todo) {
         if (Test-HasDeny $t $sid) {
@@ -1332,18 +1421,7 @@ function Unprotect-Folders($Config) {
     Write-Ok 'アクセス禁止を解除しました。'
 }
 
-# バックグラウンドで protect を実行する (setup の待ち時間をなくすため)
-function Start-ProtectBackground {
-    $st = Get-ProtectStatePaths
-    if (-not (Test-Path -LiteralPath $st.Dir)) { New-Item -ItemType Directory -Path $st.Dir -Force | Out-Null }
-    if ((Get-ProtectJobState) -eq 'running') { Write-Info 'アクセス禁止の設定は既にバックグラウンドで実行中です。'; return }
-    $proc = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru -ArgumentList @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", 'protect', '-LogFile', "`"$($st.Log)`"")
-    $job = @{ pid = $proc.Id; started = (Get-Date).ToString('o') }
-    [System.IO.File]::WriteAllText($st.Job, (ConvertTo-Json $job), (New-Object System.Text.UTF8Encoding($false)))
-    Write-Ok "アクセス禁止の設定をバックグラウンドで開始しました。進み具合は 'jfs.cmd protect -Status' で確認できます。"
-}
-
+# 旧バージョンが protect をバックグラウンドで実行していた場合の状態 (現在のバージョンはバックグラウンドで実行しない)
 function Get-ProtectJobState {
     $st = Get-ProtectStatePaths
     if (-not (Test-Path -LiteralPath $st.Job)) { return 'none' }
@@ -1740,7 +1818,7 @@ function Test-ServiceTarget([string]$Label, [string]$TaskName, [string]$Account,
             Write-Check $true "起動用タスク $($script:TaskPath)$TaskName (状態: $($task.State))"
             Write-Check ([bool](Get-HubProcess) -and (Test-Wanted (Get-Wanted) $ConsoleUser)) "サーバー管理ウィンドウで起動中 (起動していないときは 'jfs.cmd start $ConsoleUser')"
         } else {
-            Write-Check ($task.State -ne 'Disabled') "自動起動タスク $($script:TaskPath)$TaskName (状態: $($task.State))"
+            Write-Check $true "起動用タスク $($script:TaskPath)$TaskName (状態: $($task.State))"
         }
         Write-Host "       前回の実行: $($info.LastRunTime) / 結果: $(Get-TaskResultText $info.LastTaskResult)"
     } else {
@@ -2168,8 +2246,16 @@ try {
             Stop-JfsTask 'jfs-monitor' $script:MonitorAccount 'リソースモニター'
             Install-Monitor $cfg
             Sync-FirewallRules $cfg
-            Start-JfsTask 'jfs-monitor' ([int]$cfg.monitor.port) 'リソースモニター' (Get-MonitorPaths).Log | Out-Null
             foreach ($u in @($cfg.users)) { Write-UserReadme $cfg $u }
+            if (Get-HubProcess) {
+                Write-Info 'サーバー管理ウィンドウでリソースモニターを起動しています...'
+                $deadline = (Get-Date).AddSeconds(90)
+                while (-not (Test-PortListening ([int]$cfg.monitor.port)) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+                if (Test-PortListening ([int]$cfg.monitor.port)) { Write-Ok 'リソースモニターが起動しました。' }
+                else { Write-Warn 'リソースモニターが起動しませんでした。サーバー管理ウィンドウの表示を確認してください。' }
+            } else {
+                Write-Info "リソースモニターは 'jfs.cmd start' で開くサーバー管理ウィンドウの中で、ユーザーのサーバーと一緒に動きます。"
+            }
             Show-MonitorUrls $cfg
         }
 
@@ -2238,7 +2324,7 @@ try {
             $cfg = Read-Config
             if ($Status) { Show-ProtectStatus $cfg; break }
             Initialize-LocalGroup
-            if ($Background) { Start-ProtectBackground; break }
+            if ($Background) { Write-Info 'バックグラウンドでの実行は廃止しました。このウィンドウで実行します (終わるまで進み具合を表示します)。' }
             if ($LogFile) { Start-Transcript -LiteralPath $LogFile -Force | Out-Null }
             try { Protect-Folders $cfg -Reapply:$Force }
             finally { if ($LogFile) { Stop-Transcript | Out-Null } }
@@ -2250,8 +2336,10 @@ try {
     }
 } catch {
     Write-Host "[x] $($_.Exception.Message)" -ForegroundColor Red
-    if ($PauseAtEnd -or $Command -eq 'hub') { Read-Host 'Enter キーで終了します' | Out-Null }
+    if ($PauseAtEnd -or $Command -eq 'hub') { Complete-Window -Failed }
     exit 1
 }
-if ($PauseAtEnd) { Read-Host 'Enter キーで終了します' | Out-Null }
+# 管理者権限で開き直したウィンドウは、終わったら閉じる (表示が目的のコマンドは読めるように Enter で閉じる)
+$showCommands = @('help', 'list', 'url', 'token', 'logs', 'doctor', 'version', 'network')
+if ($PauseAtEnd) { Complete-Window -Keep:(($showCommands -contains $Command) -or ($Command -eq 'protect' -and $Status)) }
 exit 0

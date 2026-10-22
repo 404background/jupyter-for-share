@@ -50,6 +50,22 @@ function Start-Elevated([string]$ScriptPath, [System.Collections.IDictionary]$Bo
     Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $argList
 }
 
+# 管理者権限で開き直したウィンドウを終わらせる。
+#   成功: 10 秒後に自動で閉じる (何かキーを押すとすぐ閉じる)
+#   -Failed / -Keep (エラーや、表示が目的のコマンド): 内容を読めるように Enter で閉じる
+function Complete-Window([switch]$Failed, [switch]$Keep) {
+    Write-Host ''
+    if ($Failed -or $Keep) { Read-Host 'Enter キーでこのウィンドウを閉じます' | Out-Null; return }
+    Write-Host '完了しました。このウィンドウは 10 秒後に閉じます (何かキーを押すとすぐ閉じます)。'
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            if ($Host.UI.RawUI.KeyAvailable) { [void]$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown'); break }
+        } catch { break }
+        Start-Sleep -Milliseconds 200
+    }
+}
+
 # 外部コマンドを実行し、失敗したら出力を表示して例外にする
 function Invoke-Native {
     param(
@@ -165,20 +181,105 @@ function Get-InstancesRoot($Config) {
 
 # ---- Python ----
 
-# 全ユーザー向けにインストールされた Python を探す (サーバー用ユーザーからも読める場所にある必要がある)
-function Find-BasePython($Config) {
+# Python の実行ファイルのバージョン (取得できなければ $null)
+function Get-PythonVersion([string]$Exe) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $v = & $Exe -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $v) { return [version]([string]$v).Trim() }
+    } catch { } finally { $ErrorActionPreference = $prev }
+    return $null
+}
+
+# インストール済みの Python を探す (Program Files・C:\Python3*・レジストリ・py ランチャー・PATH)
+# Shared: サーバー実行用アカウントからも使える場所か (ユーザー個人のフォルダや Microsoft Store 版は不可)
+function Find-PythonCandidates {
+    $paths = New-Object System.Collections.Generic.List[string]
+    foreach ($dir in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, "$env:SystemDrive\")) {
+        if (-not $dir) { continue }
+        foreach ($d in @(Get-ChildItem -LiteralPath $dir -Directory -Filter 'Python3*' -ErrorAction SilentlyContinue)) {
+            $paths.Add((Join-Path $d.FullName 'python.exe'))
+        }
+    }
+    foreach ($key in @('HKLM:\SOFTWARE\Python\PythonCore', 'HKLM:\SOFTWARE\WOW6432Node\Python\PythonCore', 'HKCU:\SOFTWARE\Python\PythonCore')) {
+        foreach ($k in @(Get-ChildItem -Path $key -ErrorAction SilentlyContinue)) {
+            $ip = Get-ItemProperty -Path (Join-Path $k.PSPath 'InstallPath') -ErrorAction SilentlyContinue
+            if ($ip -and $ip.ExecutablePath) { $paths.Add([string]$ip.ExecutablePath) }
+            elseif ($ip -and $ip.'(default)') { $paths.Add((Join-Path ([string]$ip.'(default)') 'python.exe')) }
+        }
+    }
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        if (Get-Command py.exe -ErrorAction SilentlyContinue) {
+            foreach ($line in @(& py.exe -0p 2>$null)) {
+                if ($line -match '([A-Za-z]:\\.*python\.exe)\s*$') { $paths.Add($Matches[1]) }
+            }
+        }
+        foreach ($line in @(& where.exe python 2>$null)) { if ($line) { $paths.Add([string]$line) } }
+    } finally { $ErrorActionPreference = $prev }
+
+    $result = @()
+    $seen = @{}
+    foreach ($path in $paths) {
+        if (-not $path -or -not (Test-Path -LiteralPath $path)) { continue }
+        $full = [System.IO.Path]::GetFullPath($path)
+        if ($seen.ContainsKey($full.ToLowerInvariant())) { continue }
+        $seen[$full.ToLowerInvariant()] = $true
+        $store = $full -match '\\WindowsApps\\'
+        $personal = $full.StartsWith((Join-Path $env:SystemDrive 'Users') + '\', [StringComparison]::OrdinalIgnoreCase)
+        $result += [pscustomobject]@{
+            Path    = $full
+            Version = if ($store) { $null } else { Get-PythonVersion $full }
+            Shared  = -not ($store -or $personal)
+            Note    = if ($store) { 'Microsoft Store の入口 (実体ではない)' } elseif ($personal) { 'ユーザー個人のフォルダにあるため、サーバー実行用アカウントから使えません' } else { '' }
+        }
+    }
+    return $result
+}
+
+# 使う Python を決める。設定ファイルの python が最優先。なければインストール済みのものから、
+# 全ユーザー向け・3.9 以上で一番新しいものを選ぶ。-Report で見つかったものを表示する
+function Find-BasePython($Config, [switch]$Report) {
     $p = [string](Get-Value $Config.defaults 'python' '')
     if ($p) {
         if (Test-Path -LiteralPath $p) { return $p }
         throw "設定ファイルの python ($p) が見つかりません。"
     }
-    $found = @(Get-ChildItem -LiteralPath $env:ProgramFiles -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^Python3\d+$' } |
-        Sort-Object { [int]($_.Name.Substring(7)) } -Descending |
-        ForEach-Object { Join-Path $_.FullName 'python.exe' } |
-        Where-Object { Test-Path -LiteralPath $_ })
-    if ($found.Count -gt 0) { return $found[0] }
+    $cands = @(Find-PythonCandidates)
+    if ($Report) {
+        if ($cands.Count -eq 0) { Write-Info 'インストール済みの Python は見つかりませんでした。' }
+        foreach ($c in $cands) {
+            $ver = if ($c.Version) { $c.Version } else { '?' }
+            $note = if ($c.Note) { " … $($c.Note)" } elseif ($c.Version -and $c.Version -lt [version]'3.9') { ' … バージョンが古いため使いません (3.9 以上が必要)' } else { '' }
+            Write-Info "見つかった Python: $($c.Path) ($ver)$note"
+        }
+    }
+    $usable = @($cands | Where-Object { $_.Shared -and $_.Version -and $_.Version -ge [version]'3.9' } |
+        Sort-Object -Property Version -Descending)
+    if ($usable.Count -gt 0) { return $usable[0].Path }
     return $null
+}
+
+# インストールされていないパッケージ名を返す (pip を実行する前の確認用)
+function Get-MissingPackages([string]$Python, [string[]]$Packages) {
+    $names = @($Packages | Where-Object { $_ } | ForEach-Object { ($_ -replace '[<>=!~\[; ].*$', '') })
+    if ($names.Count -eq 0) { return @() }
+    $code = "import sys; from importlib import metadata as m; " +
+            "n = {(d.metadata['Name'] or '').lower().replace('_', '-') for d in m.distributions()}; " +
+            "print(' '.join(p for p in sys.argv[1:] if p.lower().replace('_', '-') not in n))"
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & $Python -c $code @names 2>$null
+        if ($LASTEXITCODE -ne 0) { return $Packages }
+    } catch {
+        return $Packages   # Python を実行できない: すべて未インストールとして扱う
+    } finally { $ErrorActionPreference = $prev }
+    $missing = @("$out".Split(' ', [StringSplitOptions]::RemoveEmptyEntries))
+    # 元の指定 (バージョン指定付きなど) で返す
+    return @($Packages | Where-Object { $missing -contains ($_ -replace '[<>=!~\[; ].*$', '') })
 }
 
 # ---- アカウント・権限 ----
