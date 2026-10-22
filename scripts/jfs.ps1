@@ -349,6 +349,7 @@ function Write-UserReadme($Config, $UserEnv) {
     $mainHost = $hosts[0]
     $ip = @($hosts | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } | Select-Object -First 1)
     $labUrl = "http://$($mainHost):$($UserEnv.port)/lab"
+    $repoUrl = [string](Get-Value $Config.defaults 'repositoryUrl' $script:RepositoryUrl)
     $monitorPort = [int]$Config.monitor.port
     $monitor = "- リソース確認 (CPU / メモリ / GPU の使用率): http://$($mainHost):$monitorPort/"
     if ($ip) { $monitor += "  (つながらない場合: http://$($ip[0]):$monitorPort/)" }
@@ -375,6 +376,10 @@ $monitor
   (この環境専用の venv に入ります。インストール後はカーネルを再起動してください)
 - git: ターミナルで ``git clone https://...``
 - ターミナルは PowerShell です (メニューの File → New → Terminal)。
+
+## このサーバーについて
+
+この環境は jupyter-for-share で作られています: $repoUrl
 
 このファイルは削除・編集してかまいません (編集すると自動更新されなくなります)。
 "@

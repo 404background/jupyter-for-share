@@ -9,6 +9,7 @@ $script:TaskPath          = '\jupyter-for-share\'
 $script:UserPrefix        = 'jfs-'
 $script:MonitorAccount    = 'jfsmon'
 $script:MonitorDir        = Join-Path $script:RepoRoot 'monitor'
+$script:RepositoryUrl     = 'https://github.com/404background/jupyter-for-share'
 
 # よく使う SID (Windows の表示言語に関係なく使える)
 $script:SidSystem = 'S-1-5-18'
