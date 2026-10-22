@@ -97,6 +97,10 @@ function Invoke-Setup {
         if ($LASTEXITCODE -ne 0) { Write-Warn "リソースモニターの設置に失敗しました。後で 'jfs.cmd monitor' を実行してください。" }
     }
 
+    # ---- 既存のユーザー環境を新しいバージョンに合わせる ----
+    & (Join-Path $PSScriptRoot 'jfs.ps1') refresh
+    if ($LASTEXITCODE -ne 0) { Write-Warn "ユーザー環境の更新に失敗しました。後で 'jfs.cmd refresh' を実行してください。" }
+
     # ---- ネットワーク・電源 ----
     $public = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object { $_.NetworkCategory -eq 'Public' })
     foreach ($n in $public) {
@@ -117,6 +121,8 @@ function Invoke-Setup {
   1. ユーザー環境を作成する (例: alice さん用。ポートは自動で決まります)
        jfs.cmd add alice
   2. 表示された URL を本人に伝え、別の PC のブラウザで開いてもらう
+     (ユーザーごとに管理用ウィンドウが開きます。閉じるとそのユーザーのサーバーは停止します)
+     PC の再起動後は 'jfs.cmd start' で開き直すか、'jfs.cmd autostart on' でサインイン時に自動で開けます
   3. 一覧・停止などは 'jfs.cmd help' を参照
   4. 別の PC からつながらない場合は 'jfs.cmd network' (ネットワーク・ファイアウォール設定の確認と変更)
 '@
