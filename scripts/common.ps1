@@ -161,8 +161,25 @@ function Read-Config {
     return $cfg
 }
 
+# ファイルを書き換える。読み込み中の別のコマンド (サーバー管理ウィンドウなど) が、
+# 書きかけや一瞬消えた状態のファイルを読まないように、一時ファイルに書いてから置き換える
+function Write-TextFileSafe([string]$Path, [string]$Text) {
+    $tmp = "$Path.tmp"
+    [System.IO.File]::WriteAllText($tmp, $Text, (New-Object System.Text.UTF8Encoding($false)))
+    for ($i = 0; ; $i++) {
+        try {
+            if (Test-Path -LiteralPath $Path) { [System.IO.File]::Replace($tmp, $Path, [NullString]::Value) }
+            else { [System.IO.File]::Move($tmp, $Path) }
+            return
+        } catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+            if ($i -ge 20) { throw }
+            Start-Sleep -Milliseconds 100   # 他のコマンドが読み込み中
+        }
+    }
+}
+
 function Save-Config($Config) {
-    $Config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
+    Write-TextFileSafe $script:ConfigPath ($Config | ConvertTo-Json -Depth 10)
     # リソースモニターに、ユーザー名とポートだけ (トークンは含めない) を渡す
     $runtime = Join-Path $script:MonitorDir '.runtime'
     if (Test-Path -LiteralPath $runtime) {

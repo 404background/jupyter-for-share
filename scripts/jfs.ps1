@@ -297,9 +297,10 @@ function Get-BasePythonOrThrow($Config) {
 function Install-JupyterLab($Config, $UserEnv, [switch]$Upgrade) {
     $p = Get-InstancePaths $UserEnv
     $py = Join-Path $p.LabVenv 'Scripts\python.exe'
-    if (Test-Path -LiteralPath $py) {
+    if ((Test-Path -LiteralPath $py) -and (Get-PythonVersion $py)) {
         Write-Info "JupyterLab 用の venv は作成済みです: $($p.LabVenv)"
     } else {
+        # 無いか、元にした Python が無くなって動かない (venv を作り直すと中のパッケージは残したまま直る)
         Invoke-Native (Get-BasePythonOrThrow $Config) @('-m', 'venv', $p.LabVenv) -Quiet
     }
     $pkgs = @('jupyterlab')
@@ -332,7 +333,7 @@ function Install-JupyterLab($Config, $UserEnv, [switch]$Upgrade) {
 function Install-UserVenv($Config, $UserEnv) {
     $p = Get-InstancePaths $UserEnv
     $py = Join-Path $p.Venv 'Scripts\python.exe'
-    if (Test-Path -LiteralPath $py) {
+    if ((Test-Path -LiteralPath $py) -and (Get-PythonVersion $py)) {
         Write-Info "venv は作成済みです: $($p.Venv)"
     } else {
         Write-Info "venv を作成しています: $($p.Venv)"
@@ -654,9 +655,7 @@ function Get-HubPaths {
 function Write-JsonFile([string]$Path, $Object) {
     $dir = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $tmp = "$Path.tmp"
-    [System.IO.File]::WriteAllText($tmp, (ConvertTo-Json -InputObject $Object -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $tmp -Destination $Path -Force
+    Write-TextFileSafe $Path (ConvertTo-Json -InputObject $Object -Depth 5)
 }
 
 # サーバー管理ウィンドウのプロセス (開いていなければ $null)
@@ -684,8 +683,12 @@ function Get-Wanted {
             $w.all = [bool]$data.all
             $w.users = @(foreach ($x in @($data.users)) { if ($x) { [string]$x } })
             $w.hold = @(foreach ($x in @($data.hold)) { if ($x) { [string]$x } })
-        } catch { }
+        } catch {
+            # 読めなかったときは前回の内容を使う (空として扱うと全員のサーバーが止まってしまう)
+            if ($script:LastWanted) { return $script:LastWanted }
+        }
     }
+    $script:LastWanted = $w
     return $w
 }
 
@@ -793,8 +796,10 @@ function New-LogTail([string]$Path) {
 
 function Read-LogTail($Tail) {
     if (-not (Test-Path -LiteralPath $Tail.Path)) { return @() }
-    $fs = [System.IO.File]::Open($Tail.Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
-                                 [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+    try {
+        $fs = [System.IO.File]::Open($Tail.Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+                                     [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+    } catch { return @() }   # ログの切り替え中などで開けなかった: 次の回に読む
     try {
         if ($fs.Length -lt $Tail.Position) { $Tail.Position = 0 }   # ログが切り替わった
         if ($fs.Length -eq $Tail.Position) { return @() }
@@ -926,14 +931,19 @@ function Invoke-Hub {
         Repair-AncestorDenies $cfg -Wait
         Grant-AncestorAccess
         try {
-            $pending = @(Get-ProtectTargets $cfg | Where-Object { (Get-ProtectedApplied $cfg) -notcontains $_ })
+            $applied = @(Get-ProtectedApplied $cfg)
+            $gsid = Get-LocalGroupSid
+            $pending = @(Get-ProtectTargets $cfg | Where-Object { ($applied -notcontains $_) -and -not (Test-IsDenied $_ $gsid) })
             if ($pending.Count -gt 0) {
                 Write-Warn "アクセス禁止がまだ設定されていない場所が $($pending.Count) か所あります (例: $(@($pending | Select-Object -First 3) -join ', '))。"
                 Write-Warn "別のウィンドウで 'jfs.cmd protect' を実行してください。"
             }
         } catch { }
         while ($true) {
-            if (((Get-Date) - $lastConfigRead).TotalSeconds -ge 5) { $cfg = Read-Config; $lastConfigRead = Get-Date }
+            if (((Get-Date) - $lastConfigRead).TotalSeconds -ge 5) {
+                try { $cfg = Read-Config } catch { }   # 読めなかったときは前回の設定のまま続ける
+                $lastConfigRead = Get-Date
+            }
             $wanted = Get-Wanted
             $running = 0
             foreach ($u in @($cfg.users)) {
@@ -976,7 +986,14 @@ function Invoke-Hub {
                     Write-UserLine $name "[jupyter-for-share] 起動します (ポート $($u.port) / ログ: $($paths.Log))"
                 }
 
-                Update-ManagedTask $st $name
+                try {
+                    Update-ManagedTask $st $name
+                } catch {
+                    Write-UserLine $name "[jupyter-for-share] 起動に失敗しました: $($_.Exception.Message)。30 秒後に再試行します。"
+                    $st.Running = $false
+                    $st.NextStart = (Get-Date).AddSeconds(30)
+                    $st.StartedAt = [datetime]::MinValue
+                }
                 foreach ($line in (Read-LogTail $st.ServerTail)) { Write-UserLine $name $line }
                 foreach ($line in (Read-LogTail $st.CommandTail)) { Write-UserLine $name $line 'command' }
             }
@@ -991,7 +1008,11 @@ function Invoke-Hub {
                     }
                     Write-UserLine 'monitor' "[jupyter-for-share] リソースモニターを起動します (ポート $($cfg.monitor.port))"
                 }
-                Update-ManagedTask $monitor 'monitor'
+                try { Update-ManagedTask $monitor 'monitor' }
+                catch {
+                    Write-UserLine 'monitor' "[jupyter-for-share] 起動に失敗しました: $($_.Exception.Message)。30 秒後に再試行します。"
+                    $monitor.Running = $false; $monitor.NextStart = (Get-Date).AddSeconds(30); $monitor.StartedAt = [datetime]::MinValue
+                }
                 foreach ($line in (Read-LogTail $monitor.Tail)) { Write-UserLine 'monitor' $line }
             } elseif ($monitor) {
                 Remove-Item -LiteralPath $monitor.Heartbeat -ErrorAction SilentlyContinue
@@ -1253,6 +1274,18 @@ function Save-ProtectedApplied([string[]]$List) {
     [System.IO.File]::WriteAllText($st.Applied, $json, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+# 拒否が (自身に、または親から引き継いで) 効いているか。
+# 旧バージョンがドライブ全体に付けた拒否が中まで引き継がれている場所を、もう一度処理しないようにするため
+function Test-IsDenied([string]$Path, [string]$Sid) {
+    try {
+        $acl = Get-Acl -LiteralPath $Path
+        foreach ($r in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+            if ($r.AccessControlType -eq 'Deny' -and $r.IdentityReference.Value -eq $Sid) { return $true }
+        }
+    } catch { }
+    return $false
+}
+
 # フォルダ自体に、グループへの「拒否」が既に付いているか (付いていれば中のファイルにも継承済み)
 function Test-HasDeny([string]$Path, [string]$Sid) {
     try {
@@ -1374,7 +1407,11 @@ function Protect-Folders($Config, [switch]$Reapply) {
         $applied = @($applied | Where-Object { $stale -notcontains $_ })
         Save-ProtectedApplied $applied
     }
-    $todo = @($targets | Where-Object { $Reapply -or ($applied -notcontains $_) -or -not (Test-HasDeny $_ $sid) })
+    # 拒否が親から引き継がれて既に効いている場所は、処理済みとして記録だけする
+    foreach ($t in $targets) {
+        if (-not $Reapply -and ($applied -notcontains $t) -and -not (Test-HasDeny $t $sid) -and (Test-IsDenied $t $sid)) { $applied += $t }
+    }
+    $todo = @($targets | Where-Object { $Reapply -or ($applied -notcontains $_) -or -not (Test-IsDenied $_ $sid) })
 
     if ($todo.Count -eq 0) {
         Save-ProtectedApplied $applied
@@ -1399,7 +1436,7 @@ function Protect-Folders($Config, [switch]$Reapply) {
     Invoke-IcaclsParallel $todo @() $argsFor
 
     foreach ($t in $todo) {
-        if (Test-HasDeny $t $sid) {
+        if (Test-IsDenied $t $sid) {
             if ($applied -notcontains $t) { $applied += $t }
         } else {
             Write-Warn "$t : アクセス禁止を設定できませんでした。"
@@ -1594,6 +1631,7 @@ function Invoke-Uninstall($Config, [switch]$DeleteFiles) {
         Write-Ok '削除しました。'
     } elseif (Test-Path -LiteralPath $userRoot) {
         Write-Info "[7/7] ユーザーのフォルダは残しました: $userRoot (ノートブックなど。不要なら削除してください)"
+        Write-Info "      再インストール後に同じユーザー名で 'jfs.cmd add <ユーザー名>' を実行すると、中身をそのまま引き継ぎます。"
     }
 
     Write-Host ''
@@ -2056,7 +2094,12 @@ try {
             $root = Initialize-InstancesRoot $cfg
             $folder = Join-Path $root $userName
             if ($folder -match "[%`"',]") { throw "フォルダのパスに使えない文字 (% `" ' ,) が含まれています: $folder" }
-            if ((Test-Path -LiteralPath $folder) -or (Get-LocalUser -Name "$($script:UserPrefix)$userName" -ErrorAction SilentlyContinue)) {
+            # アンインストール時に残したフォルダ (work などがあり、アカウントはない) は、中身を残したまま引き継ぐ
+            $hasAccount = [bool](Get-LocalUser -Name "$($script:UserPrefix)$userName" -ErrorAction SilentlyContinue)
+            $reuse = (-not $hasAccount) -and (Test-Path -LiteralPath (Join-Path $folder 'work'))
+            if ($reuse) {
+                Write-Info "以前のフォルダ $folder が残っているので、中身 (ノートブック・venv など) をそのまま使います。"
+            } elseif ((Test-Path -LiteralPath $folder) -or $hasAccount) {
                 throw ("以前の作成途中のデータ (フォルダ $folder またはアカウント $($script:UserPrefix)$userName) が残っています。" +
                        "'jfs.cmd remove $userName' で片付けてから、もう一度作成してください。")
             }
@@ -2082,7 +2125,8 @@ try {
                 $err = $_.Exception.Message
                 Write-Warn "作成に失敗したため、途中まで作ったものを片付けます: $err"
                 try {
-                    Remove-UserLeftovers $userName $folder
+                    if ($reuse) { Remove-UserLeftovers $userName '' }   # 引き継いだフォルダは消さない
+                    else { Remove-UserLeftovers $userName $folder }
                     $cfg = Read-Config
                     $cfg.users = @($cfg.users | Where-Object { $_.name -ne $userName })
                     Save-Config $cfg

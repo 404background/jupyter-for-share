@@ -1,5 +1,6 @@
 # トークンを含むので共有しない
 servers.json
+servers.json.*
 
 # ユーザーごとの環境 (jfs add で作成)
 user/
