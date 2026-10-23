@@ -1002,6 +1002,9 @@ function Invoke-Hub {
                     }
                     $states[$name] = $st
                     Write-UserLine $name "[jupyter-for-share] 起動します (ポート $($u.port) / ログ: $($paths.Log))"
+                    # 別の PC から開く URL (JupyterLab 自身がログに出す 127.0.0.1 の URL は、このPCでしか開けない)
+                    Write-UserLine $name '[jupyter-for-share] 別の PC からはこの URL で開きます (どれか 1 つ。トークン付き):'
+                    foreach ($h in (Get-ServerHosts $cfg)) { Write-UserLine $name "    http://$($h):$($u.port)/lab?token=$($u.token)" }
                 }
 
                 try {
@@ -1024,7 +1027,7 @@ function Invoke-Hub {
                         Task = 'jfs-monitor'; Heartbeat = $mp.Heartbeat; Tail = (New-LogTail $mp.Log)
                         Running = $false; StartedAt = [datetime]::MinValue; NextStart = (Get-Date)
                     }
-                    Write-UserLine 'monitor' "[jupyter-for-share] リソースモニターを起動します (ポート $($cfg.monitor.port))"
+                    Write-UserLine 'monitor' "[jupyter-for-share] リソースモニターを起動します: http://$(@(Get-ServerHosts $cfg)[0]):$($cfg.monitor.port)/"
                 }
                 try { Update-ManagedTask $monitor 'monitor' }
                 catch {
