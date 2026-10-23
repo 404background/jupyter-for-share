@@ -216,14 +216,18 @@ function Find-PythonCandidates {
     foreach ($dir in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, "$env:SystemDrive\")) {
         if (-not $dir) { continue }
         foreach ($d in @(Get-ChildItem -LiteralPath $dir -Directory -Filter 'Python3*' -ErrorAction SilentlyContinue)) {
-            $paths.Add((Join-Path $d.FullName 'python.exe'))
+            $paths.Add([System.IO.Path]::Combine($d.FullName, 'python.exe'))
         }
     }
     foreach ($key in @('HKLM:\SOFTWARE\Python\PythonCore', 'HKLM:\SOFTWARE\WOW6432Node\Python\PythonCore', 'HKCU:\SOFTWARE\Python\PythonCore')) {
         foreach ($k in @(Get-ChildItem -Path $key -ErrorAction SilentlyContinue)) {
-            $ip = Get-ItemProperty -Path (Join-Path $k.PSPath 'InstallPath') -ErrorAction SilentlyContinue
-            if ($ip -and $ip.ExecutablePath) { $paths.Add([string]$ip.ExecutablePath) }
-            elseif ($ip -and $ip.'(default)') { $paths.Add((Join-Path ([string]$ip.'(default)') 'python.exe')) }
+            # 以前に別のドライブ (今はない D: など) に入れた Python の記録が残っていることがある。
+            # Join-Path はドライブがないとエラーになるので、文字列として組み立てる (存在しなければ後で除く)
+            try {
+                $ip = Get-ItemProperty -Path (Join-Path $k.PSPath 'InstallPath') -ErrorAction SilentlyContinue
+                if ($ip -and $ip.ExecutablePath) { $paths.Add([string]$ip.ExecutablePath) }
+                elseif ($ip -and $ip.'(default)') { $paths.Add([System.IO.Path]::Combine([string]$ip.'(default)', 'python.exe')) }
+            } catch { }
         }
     }
     $prev = $ErrorActionPreference
@@ -240,7 +244,7 @@ function Find-PythonCandidates {
     $result = @()
     $seen = @{}
     foreach ($path in $paths) {
-        if (-not $path -or -not (Test-Path -LiteralPath $path)) { continue }
+        try { if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { continue } } catch { continue }
         $full = [System.IO.Path]::GetFullPath($path)
         if ($seen.ContainsKey($full.ToLowerInvariant())) { continue }
         $seen[$full.ToLowerInvariant()] = $true
