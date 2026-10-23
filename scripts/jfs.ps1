@@ -271,19 +271,33 @@ function Initialize-InstanceFolders($UserEnv, [string]$AccountSid) {
     Invoke-Native 'icacls.exe' @($p.Root, '/inheritance:r', '/grant:r',
         "*$($script:SidSystem):(OI)(CI)F", "*$($script:SidAdmins):(OI)(CI)F",
         "*$(Get-CurrentUserSid):(OI)(CI)F", "*$($AccountSid):(OI)(CI)RX", '/Q') -Quiet
-    foreach ($d in @($p.Work, $p.Venv, $p.Data, $p.Runtime, $p.Home, $p.Tmp, $p.Logs)) {
+    # Config: JupyterLab が設定 (拡張機能の有効・無効など) を書き込むことがある
+    foreach ($d in @($p.Work, $p.Venv, $p.Config, $p.Data, $p.Runtime, $p.Home, $p.Tmp, $p.Logs)) {
         Invoke-Native 'icacls.exe' @($d, '/grant', "*$($AccountSid):(OI)(CI)M", '/Q') -Quiet
     }
 }
 
 # 古いバージョンで作った環境に .logs フォルダを追加する (フォルダ全体のアクセス権は付け直さない)
+# 起動前に、サーバー実行用アカウントが書き込む必要のあるフォルダに書き込めるようにしておく
+# (以前のバージョンで作った環境にも、後から追加したフォルダの権限を付ける)
 function Initialize-LogsFolder($UserEnv) {
     $p = Get-InstancePaths $UserEnv
-    if (Test-Path -LiteralPath $p.Logs) { return }
     $user = Get-LocalUser -Name (Get-AccountName $UserEnv) -ErrorAction SilentlyContinue
     if (-not $user) { return }
-    New-Item -ItemType Directory -Path $p.Logs -Force | Out-Null
-    Invoke-Native 'icacls.exe' @($p.Logs, '/grant', "*$($user.SID.Value):(OI)(CI)M", '/Q') -Quiet
+    $sid = $user.SID.Value
+    foreach ($d in @($p.Logs, $p.Config)) {
+        if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+        $canWrite = $false
+        try {
+            foreach ($r in (Get-Acl -LiteralPath $d).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+                if ($r.AccessControlType -eq 'Allow' -and $r.IdentityReference.Value -eq $sid -and
+                    ($r.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Modify) -eq [System.Security.AccessControl.FileSystemRights]::Modify) {
+                    $canWrite = $true
+                }
+            }
+        } catch { }
+        if (-not $canWrite) { Invoke-Native 'icacls.exe' @($d, '/grant', "*$($sid):(OI)(CI)M", '/Q') -Quiet }
+    }
 }
 
 # ---- Python 環境 ----
@@ -400,6 +414,10 @@ c.ServerApp.terminado_settings = {'shell_command': [
                                  TOKEN = [string]$UserEnv.token; TERMINIT = $p.TermInit }
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText((Join-Path $p.Config 'jupyter_server_config.py'), $py, $utf8)
+    # IPython のフォルダがあると、Jupyter は起動時に古い設定の移行を試みて設定フォルダに 'migrated' を書き込もうとする。
+    # 移行するものはないので、済んだ印を先に置いておく
+    $marker = Join-Path $p.Config 'migrated'
+    if (-not (Test-Path -LiteralPath $marker)) { [System.IO.File]::WriteAllText($marker, (Get-Date).ToUniversalTime().ToString('o'), $utf8) }
 
     # ランチャー (サーバー管理ウィンドウが閉じたら停止) と、コマンド記録用のスクリプトを配置する
     $src = Join-Path $script:RepoRoot 'server'
