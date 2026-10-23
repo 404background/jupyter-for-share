@@ -1141,9 +1141,8 @@ function Get-ServerHosts($Config) {
     $hosts = @()
     $domain = [string](Get-Value $Config.defaults 'domain' '')
     if ($domain) { $hosts += $domain }
-    $cn = $env:COMPUTERNAME.ToLowerInvariant()
-    $hosts += $cn
-    $hosts += "$cn.local"
+    # コンピューター名は .local 付き (mDNS) だけを表示する。付けない名前は、つながらない環境が多いため
+    $hosts += "$($env:COMPUTERNAME.ToLowerInvariant()).local"
     try {
         $hosts += @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
             Where-Object {
@@ -1783,7 +1782,7 @@ function Get-NetworkPlan($Config, [switch]$SetPrivate, [switch]$Quiet) {
     #   Windows の PC から: LLMNR と NetBIOS / Mac・iPhone などから: mDNS (.local)
     if (-not $Quiet) { Write-Host '-- コンピューター名での接続 --' -ForegroundColor White }
     $cn = $env:COMPUTERNAME.ToLowerInvariant()
-    & $say $true "コンピューター名: $cn (URL では http://$($cn):<ポート>/ または http://$($cn).local:<ポート>/)"
+    & $say $true "コンピューター名: $cn (URL では http://$($cn).local:<ポート>/)"
     $lanIndexes = @(Get-LanAdapters | Where-Object { -not $_.Virtual -and -not $_.Tailscale } | ForEach-Object { $_.Index })
     foreach ($c in @(Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction SilentlyContinue)) {
         if ($lanIndexes -notcontains $c.InterfaceIndex) { continue }
@@ -1898,9 +1897,8 @@ function Invoke-NetworkSetup($Config, [switch]$SetPrivate, [switch]$Yes) {
     foreach ($a in @(Get-LanAdapters | Where-Object { -not $_.Virtual })) { Write-Host "    $($a.Alias): $($a.Address)" }
     Write-Host ''
     $cn = $env:COMPUTERNAME.ToLowerInvariant()
-    Write-Host 'IP アドレスではつながるのにコンピューター名でつながらない場合は、接続する側の PC で次を実行して確認してください:'
-    Write-Host "    ping -4 $cn          (Windows: 名前が見つからない / 違うアドレスになるなら名前解決の問題)"
-    Write-Host "    ping $cn.local       (Mac / iPhone などはこちら。Windows でも試せます)"
+    Write-Host "IP アドレスではつながるのに $cn.local でつながらない場合は、接続する側の PC で次を実行して確認してください:"
+    Write-Host "    ping $cn.local       (名前が見つからない / 違うアドレスになるなら名前解決の問題)"
     Write-Host '  名前解決はネットワーク機器や接続する PC の設定でも止められることがあります。確実にするには、'
     Write-Host '  ルーターでこのPCの IP を固定して名前を登録するか、接続する PC の hosts に登録してください (README の「ドメイン名でアクセスする」)。'
     Write-Host '  Tailscale 経由なら、Tailscale の管理画面に表示されるマシン名 (MagicDNS) でつながります。'

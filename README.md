@@ -7,7 +7,7 @@ Windows PC を JupyterLab サーバーにして、LAN 内の別の PC からブ�
 - ノートブック・**ターミナル (PowerShell)** の両方が使えます
 - パッケージはユーザーごとの **Python 仮想環境 (venv)** に `pip install` で自由に入れられます。`git clone` も使えます
 - **リソースモニター**専用のポート (既定 8000) で、サーバーの CPU・メモリ・GPU の使用率をブラウザで確認できます
-- **コンピューター名やドメイン名**でアクセスできます (例: `http://jupyter-pc:23456/`)
+- **コンピューター名やドメイン名**でアクセスできます (例: `http://jupyter-pc.local:23456/`)
 - Docker は使いません。Windows 標準の機能 (ローカルアカウント・NTFS アクセス権・タスクスケジューラ・ファイアウォール) で構成します
 
 ## 仕組み
@@ -170,12 +170,11 @@ jupyter-for-share サーバー管理ウィンドウ
 
 ```
 http://jupyter.home.arpa:23456/lab?token=xxxx   ← setup で -Domain を指定した場合
-http://jupyter-pc:23456/lab?token=xxxx          ← コンピューター名
-http://jupyter-pc.local:23456/lab?token=xxxx    ← mDNS (Mac / iPhone / Linux など)
+http://jupyter-pc.local:23456/lab?token=xxxx    ← コンピューター名 + .local
 http://192.168.1.10:23456/lab?token=xxxx        ← IP アドレス
 ```
 
-一度開くとブラウザに記憶されるので、2 回目以降は `http://jupyter-pc:23456/` だけで入れます。
+一度開くとブラウザに記憶されるので、2 回目以降は `http://jupyter-pc.local:23456/` だけで入れます。
 トークンはパスワードと同じなので、本人以外に知られないようにしてください。
 
 各ユーザーの `work` フォルダには、本人向けの短い `README.md` (自分の環境とリソースモニターのアドレス、使い方) が自動で作られます。
@@ -229,11 +228,11 @@ jfs.cmd network -SetPrivate
 
 IP アドレスの代わりに名前でアクセスする方法は 3 つあります。
 
-1. **コンピューター名** (設定不要): 同じ LAN の Windows PC からは `http://<コンピューター名>:<ポート>/` で通常つながります。
+1. **コンピューター名 + .local** (設定不要): 同じ LAN の PC からは `http://<コンピューター名>.local:<ポート>/` でつながります
+   (mDNS という仕組みを使います)。`.local` を付けない名前は環境によってつながらないため、URL には表示していません。
    分かりやすい名前にしたい場合は、サーバー PC の名前を変更します (`Rename-Computer -NewName jupyter-pc` → 再起動)。
-   Mac などからは `http://jupyter-pc.local:<ポート>/` を試してください。
    つながらない場合は、サーバー PC で `jfs.cmd network` を実行すると、名前の問い合わせに答える設定
-   (NetBIOS over TCP/IP・LLMNR・mDNS と、その受信規則) を確認して、無効なものを有効にできます。
+   (mDNS・LLMNR・NetBIOS over TCP/IP と、その受信規則) を確認して、無効なものを有効にできます。
    それでもつながらない場合は、ルーターや接続する PC 側で止められている可能性があるので、2 か 3 の方法を使ってください。
 2. **ルーター / 社内 DNS に登録** (おすすめ): ルーターの DHCP 設定でサーバー PC の IP を固定し、
    ルーターや DNS サーバーに `jupyter.home.arpa → 192.168.1.10` のような名前を登録します。
