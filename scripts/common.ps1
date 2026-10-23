@@ -18,6 +18,38 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
     Remove-TypeData -TypeName System.Array -ErrorAction SilentlyContinue
 }
 
+# コンソールの「簡易編集モード」を、このスクリプトの実行中だけ無効にする。
+# 有効のままだと、ウィンドウ内をクリックした時点で表示が止まり、処理も止まってしまう
+# (Enter を押すまで進まない。サーバー管理ウィンドウではハートビートが止まり全員のサーバーが停止する)。
+function Disable-ConsoleQuickEdit {
+    if ($env:OS -ne 'Windows_NT') { return }
+    try {
+        if (-not ('JfsConsole' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class JfsConsole {
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr GetStdHandle(int nStdHandle);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+}
+'@
+        }
+        $handle = [JfsConsole]::GetStdHandle(-10)   # 標準入力 (コンソール入力)
+        $mode = [uint32]0
+        if (-not [JfsConsole]::GetConsoleMode($handle, [ref]$mode)) { return }
+        $quickEdit = [uint32]0x40; $extended = [uint32]0x80
+        if (($mode -band $quickEdit) -eq 0) { return }
+        [void][JfsConsole]::SetConsoleMode($handle, [uint32](($mode - $quickEdit) -bor $extended))
+        # 終わったら元に戻す (コマンドプロンプトに戻ったあとは、いつもどおり選択・コピーできる)
+        $script:JfsConsoleRestore = @{ Handle = $handle; Mode = $mode }
+        Register-EngineEvent -SourceIdentifier ([System.Management.Automation.PsEngineEvent]::Exiting) -Action {
+            try { [void][JfsConsole]::SetConsoleMode($Event.MessageData.Handle, $Event.MessageData.Mode) } catch { }
+        } -MessageData $script:JfsConsoleRestore | Out-Null
+    } catch { }
+}
+Disable-ConsoleQuickEdit
+
 # よく使う SID (Windows の表示言語に関係なく使える)
 $script:SidSystem = 'S-1-5-18'
 $script:SidAdmins = 'S-1-5-32-544'
