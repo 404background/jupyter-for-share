@@ -1779,6 +1779,50 @@ function Get-NetworkPlan($Config, [switch]$SetPrivate, [switch]$Quiet) {
         }
     }
 
+    # コンピューター名 (pc / pc.local) で接続するには、このPCが名前の問い合わせに答える必要がある
+    #   Windows の PC から: LLMNR と NetBIOS / Mac・iPhone などから: mDNS (.local)
+    if (-not $Quiet) { Write-Host '-- コンピューター名での接続 --' -ForegroundColor White }
+    $cn = $env:COMPUTERNAME.ToLowerInvariant()
+    & $say $true "コンピューター名: $cn (URL では http://$($cn):<ポート>/ または http://$($cn).local:<ポート>/)"
+    $lanIndexes = @(Get-LanAdapters | Where-Object { -not $_.Virtual -and -not $_.Tailscale } | ForEach-Object { $_.Index })
+    foreach ($c in @(Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction SilentlyContinue)) {
+        if ($lanIndexes -notcontains $c.InterfaceIndex) { continue }
+        # TcpipNetbiosOptions: 0 = DHCP の設定に従う / 1 = 有効 / 2 = 無効
+        $nbOff = $c.TcpipNetbiosOptions -eq 2
+        & $say (-not $nbOff) "$($c.Description): NetBIOS over TCP/IP = $(if ($nbOff) { '無効 (Windows の PC からコンピューター名で見つけられないことがあります)' } else { '有効' })"
+        if ($nbOff) {
+            [void]$plan.Add([pscustomobject]@{ Text = "'$($c.Description)' の NetBIOS over TCP/IP を有効にする"; Kind = 'netbios'; Data = $c.InterfaceIndex })
+        }
+    }
+    $llmnr = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -Name 'EnableMulticast' -ErrorAction SilentlyContinue
+    if ($llmnr -and $llmnr.EnableMulticast -eq 0) {
+        & $say $false 'LLMNR (Windows の PC からコンピューター名で見つける仕組み) がポリシーで無効になっています'
+        [void]$plan.Add([pscustomobject]@{ Text = 'LLMNR を無効にしているポリシーの値を削除する (会社のドメイン参加 PC では元に戻されることがあります)'; Kind = 'llmnr'; Data = $null })
+    } else {
+        & $say $true 'LLMNR: 有効'
+    }
+    $mdns = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableMDNS' -ErrorAction SilentlyContinue
+    if ($mdns -and $mdns.EnableMDNS -eq 0) {
+        & $say $false 'mDNS (<コンピューター名>.local で見つける仕組み) が無効になっています'
+        [void]$plan.Add([pscustomobject]@{ Text = 'mDNS を無効にしている設定を削除する (反映には PC の再起動が必要)'; Kind = 'mdns'; Data = $null })
+    } else {
+        & $say $true 'mDNS (.local): 有効'
+    }
+    # Windows 標準の「ネットワーク探索」「mDNS」の受信規則 (名前の問い合わせに答える DNS Client サービス用)
+    $active = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.NetworkCategory } |
+        ForEach-Object { if ($_ -eq 'DomainAuthenticated') { 'Domain' } else { $_ } } | Select-Object -Unique)
+    $nameRules = @(Get-NetFirewallRule -Name 'NETDIS-LLMNR-In-UDP*', 'NETDIS-NB_Name-In-UDP*', 'MDNS-In-UDP*' -ErrorAction SilentlyContinue |
+        Where-Object { $rp = [string]$_.Profile; $rp -eq 'Any' -or @($active | Where-Object { $rp -match $_ }).Count -gt 0 })
+    $off = @($nameRules | Where-Object { $_.Enabled -ne 'True' })
+    & $say ($off.Count -eq 0) ("Windows 標準の名前解決の受信規則 (ネットワーク探索 / mDNS): " +
+        $(if ($nameRules.Count -eq 0) { '見つかりません' } elseif ($off.Count -eq 0) { '有効' } else { "$($off.Count) 件が無効" }))
+    if ($off.Count -gt 0) {
+        [void]$plan.Add([pscustomobject]@{
+            Text = "Windows 標準の名前解決の受信規則を有効にする ($(@($off | ForEach-Object { $_.DisplayName } | Select-Object -Unique) -join ' / '))"
+            Kind = 'enable'; Data = @($off | ForEach-Object { $_.Name })
+        })
+    }
+
     if (-not $Quiet) { Write-Host '-- python をブロックする規則 --' -ForegroundColor White }
     $blocks = @(Get-PythonBlockRules)
     if ($blocks.Count -eq 0) { & $say $true 'ありません' }
@@ -1810,6 +1854,14 @@ function Invoke-NetworkChange($Item) {
                 -Direction Inbound -Action Allow -RemoteAddress $allow -Profile Any @ruleArgs | Out-Null
         }
         'unblock' { Disable-NetFirewallRule -Name ([string]$Item.Data) }
+        'enable'  { Enable-NetFirewallRule -Name ([string[]]$Item.Data) }
+        'netbios' {
+            $c = Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter "InterfaceIndex=$([int]$Item.Data)"
+            $r = Invoke-CimMethod -InputObject $c -MethodName SetTcpipNetbios -Arguments @{ TcpipNetbiosOptions = [uint32]1 }
+            if ($r.ReturnValue -ne 0) { throw "SetTcpipNetbios の結果: $($r.ReturnValue)" }
+        }
+        'llmnr' { Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -Name 'EnableMulticast' }
+        'mdns'  { Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableMDNS' }
     }
 }
 
@@ -1844,6 +1896,14 @@ function Invoke-NetworkSetup($Config, [switch]$SetPrivate, [switch]$Yes) {
     Write-Host ''
     Write-Host 'このPCのアドレス (別の PC から ping や URL で使うもの):'
     foreach ($a in @(Get-LanAdapters | Where-Object { -not $_.Virtual })) { Write-Host "    $($a.Alias): $($a.Address)" }
+    Write-Host ''
+    $cn = $env:COMPUTERNAME.ToLowerInvariant()
+    Write-Host 'IP アドレスではつながるのにコンピューター名でつながらない場合は、接続する側の PC で次を実行して確認してください:'
+    Write-Host "    ping -4 $cn          (Windows: 名前が見つからない / 違うアドレスになるなら名前解決の問題)"
+    Write-Host "    ping $cn.local       (Mac / iPhone などはこちら。Windows でも試せます)"
+    Write-Host '  名前解決はネットワーク機器や接続する PC の設定でも止められることがあります。確実にするには、'
+    Write-Host '  ルーターでこのPCの IP を固定して名前を登録するか、接続する PC の hosts に登録してください (README の「ドメイン名でアクセスする」)。'
+    Write-Host '  Tailscale 経由なら、Tailscale の管理画面に表示されるマシン名 (MagicDNS) でつながります。'
     Write-Host ''
     Write-Host 'これでも別の PC から ping が通らない場合は、PC 側ではなくネットワーク側の原因が考えられます:'
     Write-Host '  - 接続元の PC が別のサブネット (アドレスの前半が違う) にいる → jfs.cmd set <ユーザー名> -AllowFrom で範囲を追加'
