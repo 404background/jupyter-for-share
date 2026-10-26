@@ -261,6 +261,10 @@ function Remove-ServiceAccount([string]$Account) {
 #   user\<名前>\.logs    … サーバーのログと、利用者が実行したコマンドの記録 (変更可)
 function Initialize-InstanceFolders($UserEnv, [string]$AccountSid) {
     $p = Get-InstancePaths $UserEnv
+    # 以前の環境を引き継ぐとき: ユーザーが書き込める場所に作られたリンクをたどってフォルダを作らないようにする
+    foreach ($t in @((Join-Path $p.Home 'AppData\Roaming'), (Join-Path $p.Home 'AppData\Local'), $p.IPyStartup)) {
+        Remove-LinksOnPath $p.Server $t
+    }
     foreach ($d in @($p.Root, $p.Work, $p.Venv, $p.Server, $p.Config, $p.Data, $p.Runtime, $p.Home, $p.Tmp, $p.Logs,
                      (Join-Path $p.Home 'AppData\Roaming'), (Join-Path $p.Home 'AppData\Local'))) {
         if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
@@ -347,13 +351,22 @@ function Install-JupyterLab($Config, $UserEnv, [switch]$Upgrade) {
 function Install-UserVenv($Config, $UserEnv) {
     $p = Get-InstancePaths $UserEnv
     $py = Join-Path $p.Venv 'Scripts\python.exe'
-    if ((Test-Path -LiteralPath $py) -and (Get-PythonVersion $py)) {
-        Write-Info "venv は作成済みです: $($p.Venv)"
-    } else {
-        Write-Info "venv を作成しています: $($p.Venv)"
-        Invoke-Native (Get-BasePythonOrThrow $Config) @('-m', 'venv', $p.Venv) -Quiet
-    }
     $pkgs = @('ipykernel') + @(Get-Value $Config.defaults 'venvPackages' @())
+    # ユーザーが使ってきた venv の中身 (Python のコード) は、管理者の権限では実行しない。
+    # (sitecustomize.py などを置かれると、管理者として任意の処理を実行されてしまうため)
+    if (Test-Path -LiteralPath $py) {
+        if (-not (Test-VenvBase $p.Venv)) {
+            # 元にした Python が無くなっている: 作り直す (中のパッケージは残る)
+            Write-Info "venv の元の Python が見つからないため、venv を作り直します: $($p.Venv)"
+            Remove-LinksIn $p.Venv | Out-Null
+            Invoke-Native (Get-BasePythonOrThrow $Config) @('-m', 'venv', $p.Venv) -Quiet
+        }
+        Write-Info "venv は作成済みのため、そのまま使います: $($p.Venv) (足りないパッケージはターミナルで pip install してください)"
+        Register-VenvKernel $UserEnv
+        return
+    }
+    Write-Info "venv を作成しています: $($p.Venv)"
+    Invoke-Native (Get-BasePythonOrThrow $Config) @('-m', 'venv', $p.Venv) -Quiet
     $todo = @(Get-MissingPackages $py $pkgs)
     if ($todo.Count -eq 0) {
         Write-Ok "venv のパッケージはインストール済みです ($($pkgs -join ', '))。"
@@ -368,12 +381,33 @@ function Install-UserVenv($Config, $UserEnv) {
 
 # JupyterLab の既定カーネル (python3) を利用者用 venv の Python にする。
 # JupyterLab 側の ipykernel をインストール・更新すると python3 カーネルが上書きされるので、その後に必ず呼ぶ。
+# venv の pyvenv.cfg に書かれた元の Python が残っているか (venv の Python は実行せずに確認する)
+function Test-VenvBase([string]$Venv) {
+    $cfgFile = Join-Path $Venv 'pyvenv.cfg'
+    if (-not (Test-Path -LiteralPath $cfgFile)) { return $false }
+    foreach ($line in [System.IO.File]::ReadAllLines($cfgFile)) {
+        if ($line -match '^\s*home\s*=\s*(.+?)\s*$') {
+            try { return Test-Path -LiteralPath ([System.IO.Path]::Combine($Matches[1], 'python.exe')) } catch { return $false }
+        }
+    }
+    return $false
+}
+
+# ノートブックで venv の Python を使うためのカーネルを、JupyterLab 側 (.server\lab) に登録する。
+# venv の Python (ユーザーが中身を変えられる) は実行せず、kernel.json を直接書く
 function Register-VenvKernel($UserEnv) {
     $p = Get-InstancePaths $UserEnv
     $py = Join-Path $p.Venv 'Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $py)) { return }
-    Invoke-Native $py @('-m', 'ipykernel', 'install', '--prefix', $p.LabVenv,
-                        '--name', 'python3', '--display-name', 'Python 3 (venv)') -Quiet
+    $dir = Join-Path $p.LabVenv 'share\jupyter\kernels\python3'
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $spec = [ordered]@{
+        argv         = @($py, '-m', 'ipykernel_launcher', '-f', '{connection_file}')
+        display_name = 'Python 3 (venv)'
+        language     = 'python'
+        metadata     = @{ debugger = $true }
+    }
+    [System.IO.File]::WriteAllText((Join-Path $dir 'kernel.json'), (ConvertTo-Json -InputObject $spec -Depth 5),
+                                   (New-Object System.Text.UTF8Encoding($false)))
 }
 
 # テンプレート内の @@名前@@ を置き換える
@@ -413,6 +447,11 @@ c.ServerApp.terminado_settings = {'shell_command': [
     $py = Expand-Template $py @{ BIND = $bind; PORT = [string][int]$UserEnv.port; WORK = $p.Work
                                  TOKEN = [string]$UserEnv.token; TERMINIT = $p.TermInit }
     $utf8 = New-Object System.Text.UTF8Encoding($false)
+    # config と home はユーザーも書き込めるので、書き込む先にリンクがあれば先に消す (リンク先を上書きしないように)
+    foreach ($f in @((Join-Path $p.Config 'jupyter_server_config.py'), (Join-Path $p.Config 'migrated'), $p.Launcher, $p.TermInit)) {
+        Remove-LinksOnPath $p.Server $f
+    }
+    Remove-LinksOnPath $p.Server $p.IPyStartup
     [System.IO.File]::WriteAllText((Join-Path $p.Config 'jupyter_server_config.py'), $py, $utf8)
     # IPython のフォルダがあると、Jupyter は起動時に古い設定の移行を試みて設定フォルダに 'migrated' を書き込もうとする。
     # 移行するものはないので、済んだ印を先に置いておく
@@ -470,6 +509,7 @@ function Write-UserReadme($Config, $UserEnv) {
     $p = Get-InstancePaths $UserEnv
     if (-not (Test-Path -LiteralPath $p.Work)) { return }
     $path = Join-Path $p.Work 'README.md'
+    if (Test-ReparsePoint $path) { return }   # ユーザーがリンクに置き換えた: 触らない
     $stamp = Join-Path $p.Server 'README.generated.md'   # 前回生成した内容 (変更されたか判定する用)
     $marker = '<!-- generated by jupyter-for-share -->'
     if (Test-Path -LiteralPath $path) {
@@ -1515,7 +1555,7 @@ function Remove-UserLeftovers([string]$UserName, [string]$Folder) {
     if ($task) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }
     Remove-ServiceAccount $account
     if ($Folder -and (Test-Path -LiteralPath $Folder)) {
-        Remove-Item -LiteralPath $Folder -Recurse -Force
+        Remove-TreeSafe $Folder
         Write-Ok "フォルダを削除しました: $Folder"
     }
 }
@@ -1625,6 +1665,9 @@ function Invoke-Uninstall($Config, [switch]$DeleteFiles) {
 
     # 5. このフォルダのアクセス権を元に戻す (所有者を Administrators にし、親フォルダからの継承に戻す)
     Write-Info "[5/7] $repo のアクセス権を元に戻しています..."
+    # ユーザーのフォルダ内のリンクをたどって、外の場所のアクセス権を変えてしまわないように、リンクは先に消す
+    $links = @(Remove-LinksIn (Get-InstancesRoot $Config))
+    if ($links.Count -gt 0) { Write-Info "ユーザーのフォルダ内のリンクを削除しました (リンク先はそのまま): $($links -join ', ')" }
     Invoke-Native 'icacls.exe' @($repo, '/setowner', "*$($script:SidAdmins)", '/T', '/C', '/Q') -Quiet -IgnoreExitCode
     Invoke-Native 'icacls.exe' @($repo, '/reset', '/T', '/C', '/Q') -Quiet -IgnoreExitCode
     Get-ChildItem -LiteralPath $repo -Recurse -Force -Directory -ErrorAction SilentlyContinue |
@@ -1647,7 +1690,7 @@ function Invoke-Uninstall($Config, [switch]$DeleteFiles) {
     $userRoot = Get-InstancesRoot $Config
     if ($DeleteFiles -and (Test-Path -LiteralPath $userRoot)) {
         Write-Info "[7/7] ユーザーのフォルダを削除しています: $userRoot"
-        Remove-Item -LiteralPath $userRoot -Recurse -Force
+        Remove-TreeSafe $userRoot
         Write-Ok '削除しました。'
     } elseif (Test-Path -LiteralPath $userRoot) {
         Write-Info "[7/7] ユーザーのフォルダは残しました: $userRoot (ノートブックなど。不要なら削除してください)"
@@ -2345,7 +2388,7 @@ try {
             else { Stop-JfsTask (Get-TaskName $u) (Get-AccountName $u) "ユーザー '$($u.name)' の環境" }
             try {
                 $venv = (Get-InstancePaths $u).Venv
-                if (Test-Path -LiteralPath $venv) { Remove-Item -LiteralPath $venv -Recurse -Force }
+                Remove-TreeSafe $venv
                 $sid = New-ServiceAccount (Get-AccountName $u) "jupyter-for-share: $($u.name)"
                 Initialize-InstanceFolders $u $sid
                 Install-UserVenv $cfg $u

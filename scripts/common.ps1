@@ -535,6 +535,75 @@ function Initialize-InstancesRoot($Config) {
 
 # ---- その他 ----
 
+# ---- ユーザーが書き込めるフォルダを管理者として扱うとき ----
+# ユーザーは自分のフォルダの中にジャンクション (mklink /J) などのリンクを作れる。
+# 管理者の権限でリンクをたどって削除・書き込み・権限変更をすると、ユーザー環境の外
+# (Windows や他の人のファイル) を壊してしまうので、リンクはたどらずにリンク自体を消す。
+
+function Test-ReparsePoint([string]$Path) {
+    try { return ([System.IO.File]::GetAttributes($Path) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 }
+    catch { return $false }
+}
+
+# リンク自体を削除する (リンク先には触れない)
+function Remove-LinkOnly([string]$Path) {
+    $attr = [System.IO.File]::GetAttributes($Path)
+    if ($attr -band [System.IO.FileAttributes]::Directory) { [System.IO.Directory]::Delete($Path, $false) }
+    else { [System.IO.File]::Delete($Path) }
+}
+
+# Path の中にあるリンクを、リンクの先には入らずに探す
+function Find-ReparsePoints([string]$Path) {
+    $found = @()
+    if (-not (Test-Path -LiteralPath $Path)) { return $found }
+    if (Test-ReparsePoint $Path) { return @($Path) }
+    $stack = New-Object System.Collections.Stack
+    $stack.Push($Path)
+    while ($stack.Count -gt 0) {
+        $dir = [string]$stack.Pop()
+        $entries = @()
+        try { $entries = [System.IO.Directory]::GetFileSystemEntries($dir) } catch { }
+        foreach ($e in $entries) {
+            $attr = $null
+            try { $attr = [System.IO.File]::GetAttributes($e) } catch { }
+            if ($null -eq $attr) { continue }
+            if ($attr -band [System.IO.FileAttributes]::ReparsePoint) { $found += $e }
+            elseif ($attr -band [System.IO.FileAttributes]::Directory) { $stack.Push($e) }
+        }
+    }
+    return $found
+}
+
+# Path の中のリンクをすべて消す (リンク先はそのまま)。消したリンクの一覧を返す
+function Remove-LinksIn([string]$Path) {
+    $removed = @()
+    foreach ($l in @(Find-ReparsePoints $Path)) {
+        try { Remove-LinkOnly $l; $removed += $l } catch { Write-Warn "リンクを削除できませんでした: $l ($($_.Exception.Message))" }
+    }
+    return $removed
+}
+
+# Base から Target までの途中 (Base より下) にリンクがあれば消す。Target に書き込む前に使う
+function Remove-LinksOnPath([string]$Base, [string]$Target) {
+    $base = $Base.TrimEnd('\')
+    if (-not $Target.StartsWith("$base\", [StringComparison]::OrdinalIgnoreCase)) { return }
+    $cur = $base
+    foreach ($part in $Target.Substring($base.Length + 1).Split('\')) {
+        if (-not $part) { continue }
+        $cur = "$cur\$part"
+        if (Test-ReparsePoint $cur) { Remove-LinkOnly $cur }
+    }
+}
+
+# フォルダを中身ごと削除する。中のリンクは先にリンク自体を消すので、リンク先は消えない
+# (Windows PowerShell 5.1 の Remove-Item -Recurse は、リンクの先まで削除してしまうことがある)
+function Remove-TreeSafe([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if (Test-ReparsePoint $Path) { Remove-LinkOnly $Path; return }
+    Remove-LinksIn $Path | Out-Null
+    Remove-Item -LiteralPath $Path -Recurse -Force
+}
+
 function New-Token {
     $bytes = New-Object byte[] 24
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
