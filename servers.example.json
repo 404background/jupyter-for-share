@@ -11,7 +11,8 @@
     "extraServerPackages": [],
     "venvPackages": [],
     "protectedPaths": ["auto"],
-    "protectLevel": "full"
+    "protectLevel": "full",
+    "autoUpdateMinutes": 60
   },
   "monitor": {
     "enabled": false,

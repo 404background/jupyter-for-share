@@ -431,10 +431,16 @@ function Remove-AllAccountRights([string]$Sid) {
 }
 
 # jupyter-for-share のバージョン (git のコミット)。setup で git pull に失敗して古いままになっていないかの確認用
+function Get-GitExe {
+    $git = (Get-Command git.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if (-not $git -and $env:ProgramFiles) { $git = Join-Path $env:ProgramFiles 'Git\cmd\git.exe' }
+    if ($git -and (Test-Path -LiteralPath $git)) { return $git }
+    return $null
+}
+
 function Get-JfsVersion {
-    $git = (Get-Command git -ErrorAction SilentlyContinue).Source
-    if (-not $git) { $git = Join-Path $env:ProgramFiles 'Git\cmd\git.exe' }
-    if (Test-Path -LiteralPath $git) {
+    $git = Get-GitExe
+    if ($git) {
         $prev = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
