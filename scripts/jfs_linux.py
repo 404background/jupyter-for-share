@@ -498,7 +498,8 @@ def ensure_ancestor_access(path):
     d = os.path.dirname(os.path.abspath(path))
     while True:
         st = os.stat(d)
-        if not st.st_mode & stat.S_IXOTH:
+        done = any(c["path"] == d and c.get("how") == "acl" for c in changed)   # ACL で許可済み (o+x は付かない)
+        if not st.st_mode & stat.S_IXOTH and not done:
             if shutil.which("setfacl"):
                 run(["setfacl", "-m", "g:%s:--x" % GROUP, d], quiet=True)
                 how = "acl"
@@ -712,14 +713,11 @@ def install_user_venv(cfg, u):
         if not venv_base_exists(p["venv"]):
             # 元にした Python が無くなっている (OS の更新など): 本人のアカウントで作り直す (中のパッケージは残る)
             info("venv の元の Python が見つからないため、venv を作り直します: " + p["venv"])
-            run([base_python_or_raise(cfg), "-m", "venv", p["venv"]], quiet=True, **as_user_kwargs(u))
+            run(venv_command(cfg) + [p["venv"]], quiet=True, **as_user_kwargs(u))
         info("venv は作成済みのため、そのまま使います: %s (足りないパッケージはターミナルで pip install してください)" % p["venv"])
     else:
         info("venv を作成しています: " + p["venv"])
-        args = [base_python_or_raise(cfg), "-m", "venv"]
-        if use_system_site_packages(cfg):
-            args.append("--system-site-packages")   # Jetson: JetPack の TensorRT・OpenCV なども使えるように
-        run(args + [p["venv"]], quiet=True, **as_user_kwargs(u))
+        run(venv_command(cfg) + [p["venv"]], quiet=True, **as_user_kwargs(u))
         pkgs = ["ipykernel"] + list(dget(cfg, "venvPackages", []) or [])
         todo = missing_packages(py, pkgs, as_user=u)
         if todo:
@@ -729,6 +727,13 @@ def install_user_venv(cfg, u):
             run([py, "-m", "pip", "install", "--disable-pip-version-check"] + todo, quiet=True, **kw)
     register_kernel(u)
     ok("venv の準備ができました。")
+
+
+def venv_command(cfg):
+    args = [base_python_or_raise(cfg), "-m", "venv"]
+    if use_system_site_packages(cfg):
+        args.append("--system-site-packages")   # Jetson: JetPack の TensorRT・OpenCV なども使えるように
+    return args
 
 
 def venv_base_exists(venv):
@@ -1354,6 +1359,8 @@ def invoke_hub():
         raise KeyboardInterrupt
     for s in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(s, on_signal)
+    # Ctrl+C で止められるようにする (バックグラウンドから起動された場合など、無視する設定を引き継いでいることがある)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
 
     # 実行用アカウントがリポジトリまでたどれるか、起動のたびに確かめる (誰かが上の階層の権限を変えた場合など)
     with _suppress():
@@ -1383,7 +1390,8 @@ def invoke_hub():
         print()
         print(_color("33", "サーバー管理ウィンドウを終了します。全員のサーバーを停止しています..."), flush=True)
     finally:
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):   # 止めている途中で中断されないように
+            signal.signal(s, signal.SIG_IGN)
         lib.hub_stop_all(state)
         with _suppress():
             os.unlink(hub_paths()["record"])
@@ -1579,13 +1587,17 @@ def cmd_remove(cfg, a):
 def cmd_start(cfg, a):
     if not cfg["users"]:
         raise JfsError("ユーザー環境がありません。'%s add <ユーザー名>' で作成してください。" % CMD)
+    hub = hub_pid()
     if a.name and a.name != "all":
         targets = [required_user(cfg, a.name)]
-        add_wanted(targets[0]["name"])
+        if hub:
+            add_wanted(targets[0]["name"])
+        else:
+            save_wanted(False, [targets[0]["name"]], [])   # 前回の状態 (Ctrl+C で終えたときのもの) は引き継がない
     else:
         targets = cfg["users"]
-        save_wanted(True, [])
-    if not hub_pid():
+        save_wanted(True, [], None if hub else [])
+    if not hub:
         invoke_hub()
         return
     info("サーバー管理ウィンドウは既に開いています。そちらで起動されるのを待っています...")
@@ -1758,6 +1770,8 @@ def install_monitor(cfg):
             raise JfsError("psutil をインストールできませんでした。ビルドに必要なものを入れてから再実行してください "
                            "(Ubuntu / Jetson の例: sudo apt-get install -y build-essential python3-dev)。")
     run(["chmod", "-R", "go+rX,go-w", mp["venv"]], quiet=True)
+    # モニターの実行用アカウントがスクリプトを読めるようにする (clone したときの設定で読めないことがある)
+    run(["chmod", "go+rX", MONITOR_DIR, mp["script"], os.path.join(MONITOR_DIR, "index.html")], quiet=True, check_rc=False)
     save_config(cfg)   # users.json を書く
 
 
@@ -2094,16 +2108,27 @@ class Args:
         self.delete_files = self.skip_monitor = False
         rest = list(argv)
         positional = []
+
+        def value(opt):
+            if not rest:
+                raise JfsError("%s の後に値を指定してください。" % opt)
+            return rest.pop(0)
+
+        def number(opt):
+            v = value(opt)
+            if not v.isdigit():
+                raise JfsError("%s には数字を指定してください: %s" % (opt, v))
+            return int(v)
         while rest:
             x = rest.pop(0)
             if x.startswith("-") and len(x) > 1:
                 key = x.lstrip("-").lower().replace("-", "")
                 if key in ("port", "monitorport"):
-                    self.port = int(rest.pop(0))
+                    self.port = number(x)
                 elif key == "allowfrom":
-                    self.allow_from = [s.strip() for s in rest.pop(0).split(",") if s.strip()]
+                    self.allow_from = [s.strip() for s in value(x).split(",") if s.strip()]
                 elif key == "domain":
-                    self.domain = rest.pop(0)
+                    self.domain = value(x)
                 elif key in ("force", "f"):
                     self.force = True
                 elif key == "keepfiles":

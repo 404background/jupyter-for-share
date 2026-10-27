@@ -918,14 +918,16 @@ function Restart-UserEnv($UserEnv, $Config) {
 function Start-Users($Config, [string]$UserName) {
     $users = @($Config.users)
     if ($users.Count -eq 0) { throw "ユーザー環境がありません。'jfs.cmd add <ユーザー名>' で作成してください。" }
+    $hub = Get-HubProcess
     if ($UserName -and $UserName -ne 'all') {
         $targets = @(Get-RequiredUser $Config $UserName)
-        Add-Wanted $targets[0].name
+        # サーバー管理ウィンドウが無いときは、前回 (閉じたときのまま) の起動対象・一時停止は引き継がない
+        if ($hub) { Add-Wanted $targets[0].name } else { Save-Wanted $false @($targets[0].name) @() }
     } else {
         $targets = $users
-        Save-Wanted $true @()
+        if ($hub) { Save-Wanted $true @() } else { Save-Wanted $true @() @() }
     }
-    if (-not (Get-HubProcess)) {
+    if (-not $hub) {
         Invoke-Hub
         return
     }
