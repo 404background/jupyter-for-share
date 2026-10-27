@@ -151,7 +151,7 @@ function render(d) {
       return '<div class="gpu"><div class="gpu-name">' + esc(g.name) + '</div>' +
         '<div class="big">' + pct(g.util) + '</div>' +
         '<div class="bar"><div id="gpu-bar-' + i + '"></div></div>' +
-        '<div class="sub">メモリ ' + bytes(g.mem_used) + (g.mem_total ? ' / ' + bytes(g.mem_total) + ' (' + pct(memPct) + ')' : '') +
+        '<div class="sub">メモリ ' + (g.mem_note ? esc(g.mem_note) : bytes(g.mem_used) + (g.mem_total ? ' / ' + bytes(g.mem_total) + ' (' + pct(memPct) + ')' : '')) +
         (extra ? ' / ' + extra : '') + '</div>' +
         (memPct !== null ? '<div class="bar"><div id="gpu-mem-' + i + '"></div></div>' : '') +
         '<canvas id="gpu-chart-' + i + '"></canvas></div>';

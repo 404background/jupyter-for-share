@@ -12,7 +12,8 @@
     "venvPackages": [],
     "protectedPaths": ["auto"],
     "protectLevel": "full",
-    "autoUpdateMinutes": 60
+    "autoUpdateMinutes": 60,
+    "venvSystemSitePackages": "auto"
   },
   "monitor": {
     "enabled": false,

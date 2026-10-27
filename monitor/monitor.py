@@ -10,6 +10,7 @@ import argparse
 import collections
 import contextlib
 import ctypes
+import glob
 import json
 import os
 import re
@@ -184,7 +185,59 @@ class PdhGpu:
         return gpus
 
 
+# ---- GPU: NVIDIA Jetson (nvidia-smi がない。GPU の使用率は /sys から読む。メモリは CPU と共有) ----
+
+JETSON_LOAD_FILES = (
+    "/sys/devices/gpu.0/load",                          # Xavier / Nano / TX2 (JetPack 4・5)
+    "/sys/devices/platform/gpu.0/load",
+    "/sys/devices/platform/17000000.gv11b/load",        # Xavier (JetPack 5)
+    "/sys/devices/17000000.gv11b/load",
+    "/sys/devices/platform/17000000.ga10b/load",        # Orin
+    "/sys/devices/17000000.ga10b/load",
+)
+
+
+class JetsonGpu:
+    def __init__(self, load_file):
+        self.load_file = load_file
+        try:
+            with open("/proc/device-tree/model", encoding="utf-8", errors="replace") as f:
+                self.name = f.read().strip("\0\n ") or "NVIDIA Jetson"
+        except OSError:
+            self.name = "NVIDIA Jetson"
+        self.temp_file = None
+        for zone in sorted(glob.glob("/sys/class/thermal/thermal_zone*/type")):
+            try:
+                with open(zone) as f:
+                    if f.read().strip().lower().startswith("gpu"):
+                        self.temp_file = os.path.join(os.path.dirname(zone), "temp")
+                        break
+            except OSError:
+                pass
+
+    def read(self):
+        with open(self.load_file) as f:
+            load = to_float(f.read().strip())   # 0 - 1000
+        temp = None
+        if self.temp_file:
+            try:
+                with open(self.temp_file) as f:
+                    temp = to_float(f.read().strip()) / 1000
+            except (OSError, TypeError):
+                pass
+        return [{"name": self.name, "util": load / 10 if load is not None else None, "mem_used": None,
+                 "mem_total": None, "mem_note": "CPU と共有 (上のメモリの値を参照)", "temp": temp, "power": None}]
+
+
 def create_gpu_reader():
+    for path in JETSON_LOAD_FILES:
+        if os.path.exists(path):
+            try:
+                reader = JetsonGpu(path)
+                reader.read()
+                return reader, "Jetson (" + path + ")"
+            except Exception:
+                pass
     exe = find_nvidia_smi()
     if exe:
         reader = NvidiaGpu(exe)
