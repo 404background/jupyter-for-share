@@ -1085,9 +1085,15 @@ function Update-AutoUpdate($State, $Config, [bool]$MonitorRunning) {
 
 # よくあるカーネルの起動失敗に、対処方法を 1 回だけ添える
 function Show-KernelHint([string]$UserName, [string]$Line) {
+    if (-not $script:KernelHints) { $script:KernelHints = @{} }
+    if ($Line -match 'KernelRestarter: restart failed' -and -not $script:KernelHints.ContainsKey("$UserName|died")) {
+        $script:KernelHints["$UserName|died"] = $true
+        Write-UserLine $UserName ("[jupyter-for-share] カーネルが起動直後に終了しました。選んだカーネルが自分で作った venv の場合は、" +
+            "その venv が壊れているか ipykernel が入っていない可能性があります (作り直し方: docs/for-users.md の「別の venv を作る」)。")
+        return
+    }
     if ($Line -notmatch '^(.+?python[^:]*?): No module named ipykernel_launcher') { return }
     $py = $Matches[1].Trim()
-    if (-not $script:KernelHints) { $script:KernelHints = @{} }
     $key = "$UserName|$py"
     if ($script:KernelHints.ContainsKey($key)) { return }
     $script:KernelHints[$key] = $true

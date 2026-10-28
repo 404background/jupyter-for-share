@@ -1284,6 +1284,11 @@ _kernel_hints = set()
 
 def kernel_hint(name, line):
     """よくあるカーネルの起動失敗に、対処方法を 1 回だけ添える"""
+    if "KernelRestarter: restart failed" in line and (name, "died") not in _kernel_hints:
+        _kernel_hints.add((name, "died"))
+        user_line(name, "[jupyter-for-share] カーネルが起動直後に終了しました。選んだカーネルが自分で作った venv の場合は、"
+                        "その venv が壊れているか ipykernel が入っていない可能性があります (作り直し方: docs/for-users.md の「別の venv を作る」)。")
+        return
     m = re.match(r"(.+?python[^:]*?): No module named ipykernel_launcher", line)
     if not m or (name, m.group(1)) in _kernel_hints:
         return
