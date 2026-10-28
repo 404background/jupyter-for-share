@@ -553,6 +553,8 @@ $monitor
 - パッケージ: ターミナルで ``pip install パッケージ名``、ノートブックでは ``%pip install パッケージ名``
   (この環境専用の venv に入ります。インストール後はカーネルを再起動してください)
 - git: ターミナルで ``git clone https://...``
+- 別の venv を作るときは、この work フォルダの中に作ってください (例: ターミナルで ``python -m venv sam3_env``)。
+  work の外 (一つ上のフォルダなど) には書き込めません。ノートブックで使う方法: $repoUrl/blob/main/docs/for-users.md
 - ターミナルは PowerShell です (メニューの File → New → Terminal)。
 
 ## このサーバーについて

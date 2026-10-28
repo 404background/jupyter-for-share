@@ -29,6 +29,38 @@ pip install numpy pandas            # ターミナルで
 インストールしたら、ノートブックのカーネルを再起動してください (メニューの Kernel → Restart Kernel)。
 venv を初期状態に戻したいときは管理者に依頼してください (`work` のファイルは消えません)。
 
+## 別の venv を作る (プロジェクトごと・別のバージョンの Python など)
+
+自分で書き込めるのは **`work` フォルダの中だけ**です。venv も `work` の中に作ってください
+(`work` の一つ上のフォルダ `user\<名前>` などに作ろうとすると「アクセスが拒否されました」/「Permission denied」になります)。
+
+Windows のサーバー (ターミナルは PowerShell):
+
+```powershell
+python -m venv sam3_env                         # work の中に作られる (py -3.12 -m venv sam3_env のように版も指定できます)
+.\sam3_env\Scripts\python -m pip install ipykernel
+.\sam3_env\Scripts\python -m ipykernel install --user --name sam3 --display-name "Python (sam3)"
+```
+
+Linux / Jetson のサーバー (ターミナルは bash):
+
+```bash
+python3 -m venv sam3_env
+./sam3_env/bin/python -m pip install ipykernel
+./sam3_env/bin/python -m ipykernel install --user --name sam3 --display-name "Python (sam3)"
+```
+
+最後の行でノートブックのカーネルとして登録され、JupyterLab を再読み込みすると「Python (sam3)」を選べるようになります。
+
+ノートブックから作る場合は、パスを `work` の中にします。`os.getcwd()` はそのノートブックがあるフォルダです。
+
+```python
+import os, subprocess, sys
+target = os.path.join(os.getcwd(), "sam3_env")          # work の中
+result = subprocess.run([sys.executable, "-m", "venv", target], capture_output=True, text=True)
+print(result.returncode, result.stderr)
+```
+
 ## ターミナルと git
 
 メニューの File → New → Terminal でターミナルが開きます (Windows のサーバーでは PowerShell、Linux のサーバーでは bash)。
