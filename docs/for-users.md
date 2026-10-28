@@ -61,6 +61,16 @@ result = subprocess.run([sys.executable, "-m", "venv", target], capture_output=T
 print(result.returncode, result.stderr)
 ```
 
+うまくいかないとき:
+
+| 表示 | 原因と対処 |
+| --- | --- |
+| `No module named ipykernel_launcher` (カーネルが何度も再起動して止まる) | その venv に ipykernel が入っていません。`.\sam3_env\Scripts\python -m pip install ipykernel` |
+| `No module named pip` | venv の作成が途中で止まり、pip が入っていません。`.\sam3_env\Scripts\python -m ensurepip --upgrade` のあと、もう一度 pip install |
+| venv の作成で `Permission denied: ...\Scripts\python.exe` | その venv をカーネルとして使っているノートブックがあり、python.exe が使用中です。カーネルを止めて (Kernel → Shut Down Kernel) から作り直してください。それでも続く場合は管理者に連絡してください |
+
+(Linux / Jetson では `.\sam3_env\Scripts\python` を `./sam3_env/bin/python` に読み替えてください)
+
 ## ターミナルと git
 
 メニューの File → New → Terminal でターミナルが開きます (Windows のサーバーでは PowerShell、Linux のサーバーでは bash)。
