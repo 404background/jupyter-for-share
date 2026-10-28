@@ -53,6 +53,8 @@ python3 -m venv sam3_env
 最後の行でノートブックのカーネルとして登録され、JupyterLab を再読み込みすると「Python (sam3)」を選べるようになります。
 
 ノートブックから作る場合は、パスを `work` の中にします。`os.getcwd()` はそのノートブックがあるフォルダです。
+作る・作り直す venv とは**別のカーネル** (「Python 3 (venv)」など) で動いているノートブックから実行してください
+(その venv 自身のカーネルからは、使用中のファイルを上書き・削除できません)。
 
 ```python
 import os, subprocess, sys
@@ -67,7 +69,7 @@ print(result.returncode, result.stderr)
 | --- | --- |
 | `No module named ipykernel_launcher` (カーネルが何度も再起動して止まる) | その venv に ipykernel が入っていません。`.\sam3_env\Scripts\python -m pip install ipykernel` |
 | `No module named pip` | venv の作成が途中で止まり、pip が入っていません。`.\sam3_env\Scripts\python -m ensurepip --upgrade` のあと、もう一度 pip install |
-| venv の作成で `Permission denied: ...\Scripts\python.exe` | その venv をカーネルとして使っているノートブックがあり、python.exe が使用中です。カーネルを止めて (Kernel → Shut Down Kernel) から作り直してください。それでも続く場合は管理者に連絡してください |
+| venv の作成・削除で `Permission denied` / `アクセスが拒否されました` (`python.exe` や `.pyd`) | その venv の Python がカーネルとして動いていて、ファイルが使用中です。左の「実行中のターミナルとカーネル」(■) で Kernels を「Shut Down All」し、作業するノートブックのカーネルを「Python 3 (venv)」にしてから、ターミナルで作り直してください。それでも消せない場合は管理者に `jfs.cmd restart <名前>` を依頼してください |
 
 (Linux / Jetson では `.\sam3_env\Scripts\python` を `./sam3_env/bin/python` に読み替えてください)
 
