@@ -2180,6 +2180,19 @@ for path in paths:
     except Exception as e:
         result = "NG  %s: %s" % (type(e).__name__, e)
     print("%-6s %s" % ("lstat", path), "->", result)
+# 作業フォルダに venv を作れるか (.exe の作成をウイルス対策ソフトなどに止められていないか)
+if len(sys.argv) > 2:
+    import shutil, venv
+    test = os.path.join(sys.argv[2], ".jfs-venv-test")
+    shutil.rmtree(test, ignore_errors=True)
+    try:
+        venv.create(test, with_pip=False)
+        result = "OK"
+    except Exception as e:
+        result = "NG  %s: %s" % (type(e).__name__, e)
+    finally:
+        shutil.rmtree(test, ignore_errors=True)
+    print("%-6s %s" % ("venv", test), "->", result)
 '@
     # Tmp はユーザーも書き込めるので、置き換えられたリンクなどを先に消してから書く
     foreach ($f in @($pyFile, $cmdFile, $out, (Join-Path $p.Tmp 'access-test.json'))) {
@@ -2190,7 +2203,7 @@ for path in paths:
     # パスの一覧はファイルで渡す (コマンドラインだと "E:\" の末尾の \ が引用符のエスケープと解釈されるため)
     $jsonFile = Join-Path $p.Tmp 'access-test.json'
     [System.IO.File]::WriteAllText($jsonFile, (ConvertTo-Json -InputObject @($paths)), (New-Object System.Text.UTF8Encoding($false)))
-    $cmd = "@echo off`r`nwhoami /groups > `"$out`" 2>&1`r`n`"$py`" `"$pyFile`" `"$jsonFile`" >> `"$out`" 2>&1`r`n"
+    $cmd = "@echo off`r`nwhoami /groups > `"$out`" 2>&1`r`n`"$py`" `"$pyFile`" `"$jsonFile`" `"$($p.Work)`" >> `"$out`" 2>&1`r`n"
     Write-BatchFile $cmdFile $cmd
     Remove-Item -LiteralPath $out -ErrorAction SilentlyContinue
 
@@ -2217,15 +2230,21 @@ for path in paths:
     }
     $lines = @(Get-Content -LiteralPath $out -Encoding UTF8)
     $ng = @($lines | Where-Object { $_ -match '-> NG' })
-    Write-Check ($ng.Count -eq 0) "実行用アカウント $(Get-AccountName $UserEnv) として各場所を読めるか (結果: $out)"
-    foreach ($l in @($lines | Where-Object { $_ -match '^(account|lstat)' })) {
+    Write-Check ($ng.Count -eq 0) "実行用アカウント $(Get-AccountName $UserEnv) として各場所を読めるか・work に venv を作れるか (結果: $out)"
+    foreach ($l in @($lines | Where-Object { $_ -match '^(account|lstat|venv)' })) {
         $color = if ($l -match '-> NG') { 'Red' } else { 'Gray' }
         Write-Host "       $l" -ForegroundColor $color
     }
     if ($ng.Count -gt 0) {
         Write-Host '       読めない場所のアクセス権 (icacls):'
         foreach ($l in $ng) {
-            $path = ($l -replace '^lstat\s+', '' -replace '\s+->.*$', '').Trim()
+            if ($l -match '^venv') {
+                Write-Host '       work に venv を作れません。work のアクセス権が正しい場合は、ウイルス対策ソフトが .exe の作成を止めていないか、' -ForegroundColor Yellow
+                Write-Host '       Windows セキュリティの「保護の履歴」(コントロールされたフォルダー アクセス) などを確認してください。' -ForegroundColor Yellow
+                $path = $p.Work
+            } else {
+                $path = ($l -replace '^lstat\s+', '' -replace '\s+->.*$', '').Trim()
+            }
             & icacls.exe $path 2>&1 | ForEach-Object { Write-Host "         $_" }
         }
     }
