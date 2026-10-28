@@ -1083,6 +1083,18 @@ function Update-AutoUpdate($State, $Config, [bool]$MonitorRunning) {
     return $State
 }
 
+# よくあるカーネルの起動失敗に、対処方法を 1 回だけ添える
+function Show-KernelHint([string]$UserName, [string]$Line) {
+    if ($Line -notmatch '^(.+?python[^:]*?): No module named ipykernel_launcher') { return }
+    $py = $Matches[1].Trim()
+    if (-not $script:KernelHints) { $script:KernelHints = @{} }
+    $key = "$UserName|$py"
+    if ($script:KernelHints.ContainsKey($key)) { return }
+    $script:KernelHints[$key] = $true
+    Write-UserLine $UserName "[jupyter-for-share] このカーネルの Python に ipykernel が入っていないため、カーネルが起動できません。"
+    Write-UserLine $UserName "[jupyter-for-share] 本人のターミナルで次を実行してもらってください: & `"$py`" -m pip install ipykernel"
+}
+
 # サーバー管理ウィンドウの本体 (jfs.ps1 hub)
 function Invoke-Hub {
     if (Get-HubProcess) { throw 'サーバー管理ウィンドウは既に開いています。' }
@@ -1173,7 +1185,10 @@ function Invoke-Hub {
                     $st.NextStart = (Get-Date).AddSeconds(30)
                     $st.StartedAt = [datetime]::MinValue
                 }
-                foreach ($line in (Read-LogTail $st.ServerTail)) { Write-UserLine $name $line }
+                foreach ($line in (Read-LogTail $st.ServerTail)) {
+                    Write-UserLine $name $line
+                    Show-KernelHint $name $line
+                }
                 foreach ($line in (Read-LogTail $st.CommandTail)) { Write-UserLine $name $line 'command' }
             }
             # リソースモニター (設置済みなら、ユーザーのサーバーと一緒に動かす)

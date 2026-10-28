@@ -1234,6 +1234,7 @@ def hub_tick(state):
             device_gids(cfg)))
         for line in st["server_tail"].read_lines():
             user_line(name, line)
+            kernel_hint(name, line)
         for line in st["command_tail"].read_lines():
             user_line(name, line, "command")
 
@@ -1276,6 +1277,19 @@ def hub_tick(state):
         print(_color("33", "起動対象のユーザーがいなくなったため、サーバー管理ウィンドウを終了します。"), flush=True)
         return "exit"
     return result
+
+
+_kernel_hints = set()
+
+
+def kernel_hint(name, line):
+    """よくあるカーネルの起動失敗に、対処方法を 1 回だけ添える"""
+    m = re.match(r"(.+?python[^:]*?): No module named ipykernel_launcher", line)
+    if not m or (name, m.group(1)) in _kernel_hints:
+        return
+    _kernel_hints.add((name, m.group(1)))
+    user_line(name, "[jupyter-for-share] このカーネルの Python に ipykernel が入っていないため、カーネルが起動できません。")
+    user_line(name, "[jupyter-for-share] 本人のターミナルで次を実行してもらってください: %s -m pip install ipykernel" % m.group(1).strip())
 
 
 def write_heartbeat(path):
