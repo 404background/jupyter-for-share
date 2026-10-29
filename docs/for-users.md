@@ -27,7 +27,8 @@ pip install numpy pandas            # ターミナルで
 ```
 
 インストールしたら、ノートブックのカーネルを再起動してください (メニューの Kernel → Restart Kernel)。
-venv を初期状態に戻したいときは管理者に依頼してください (`work` のファイルは消えません)。
+venv が壊れた (python や pip が動かない、カーネルが起動しない) ときは、管理者に `jfs.cmd reset-venv <名前>` を依頼してください。
+入れたパッケージを残したまま、Python 本体・pip・ipykernel だけを直します (自分で作った venv は `-Venv sam3_env` のように指定)。
 
 ## 別の venv を作る (プロジェクトごと・別のバージョンの Python など)
 

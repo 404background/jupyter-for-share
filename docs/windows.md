@@ -112,7 +112,7 @@ PC の再起動やサインアウトでサーバー管理ウィンドウは閉�
 | `jfs.cmd set <名前> -Port 23456` | ポートを変更 (`-AllowFrom 192.168.0.0/16` で接続を許可する相手も変更) |
 | `jfs.cmd logs <名前> [-Follow]` | 実行したコマンドの記録とサーバーのログ (`logs monitor` でモニターのログ) |
 | `jfs.cmd upgrade [名前]` | JupyterLab 本体を最新にする (venv のパッケージはそのまま) |
-| `jfs.cmd reset-venv <名前>` | venv を作り直す (入れたパッケージは消える。work のファイルは残る) |
+| `jfs.cmd reset-venv <名前> [-Venv sam3_env] [-Clean]` | venv を修復 (Python 本体・pip・ipykernel を本人のアカウントで確かめ、壊れているものだけ直す。入れたパッケージは残す)。`-Venv` で本人が work に作った venv、`-Clean` で空の状態から作り直し |
 | `jfs.cmd monitor [-Port 8000]` / `monitor-stop` | リソースモニターを設置・変更 / 停止 |
 | `jfs.cmd autostart on\|off` | 管理者のサインイン時にサーバー管理ウィンドウを自動で開く |
 | `jfs.cmd network [-SetPrivate] [-Yes]` | 他の PC から接続できるようにネットワーク設定を確認・変更 |

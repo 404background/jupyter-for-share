@@ -74,6 +74,7 @@ http://192.168.1.10:23456/lab?token=xxxxxxxx       ← IP アドレス (名前�
 | 接続用 URL をもう一度表示する | `jfs.cmd url [名前]` |
 | ログと、その人が実行したコマンドを見る | `jfs.cmd logs <名前>` |
 | ユーザーを削除する (フォルダごと) | `jfs.cmd remove <名前>` (`-KeepFiles` でフォルダは残す) |
+| venv が壊れたので直す (入れたパッケージは残す) | `jfs.cmd reset-venv <名前>` (work に作った venv は `-Venv <フォルダ名>`) |
 | つながらない原因を調べる | `jfs.cmd doctor [名前]` / 別の PC からだけつながらないときは `jfs.cmd network` |
 | コマンドの一覧・詳しい説明 | `jfs.cmd help` / `jfs.cmd help <コマンド>` |
 

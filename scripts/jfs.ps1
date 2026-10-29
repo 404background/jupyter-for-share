@@ -27,6 +27,8 @@ param(
     [string]$LogFile,
     [switch]$Yes,
     [switch]$SetPrivate,
+    [switch]$Clean,
+    [string]$Venv,
     [switch]$PauseAtEnd
 )
 
@@ -55,7 +57,7 @@ $script:CommandHelp = @{
     'version'      = "jfs.cmd version`n  jupyter-for-share のバージョン (git のコミット) を表示します。"
     'refresh'      = "jfs.cmd refresh`n  全ユーザーの起動用ファイル・設定・起動用タスクを作り直します (更新後に setup.cmd から自動で実行されます)。"
     'upgrade'      = "jfs.cmd upgrade [ユーザー名]`n  JupyterLab 本体を最新版に更新します。省略で全員分。venv に入れたパッケージはそのまま。"
-    'reset-venv'   = "jfs.cmd reset-venv <ユーザー名> [-Force]`n  venv を作り直します (pip で入れたパッケージは消えます。work フォルダのファイルは残ります)。"
+    'reset-venv'   = "jfs.cmd reset-venv <ユーザー名> [-Venv work内のフォルダ] [-Clean] [-Force]`n  venv を修復します。Python 本体・pip・ipykernel が動くかを本人のアカウントで確かめ、壊れているものだけ直します`n  (インストール済みのパッケージは残します)。`n  -Venv: 本人が work の中に作った venv を対象にする (例: -Venv sam3_env)`n  -Clean: 修復ではなく、空の状態から作り直す (入れたパッケージは消えます。work のほかのファイルは残ります)`n  -Force: -Clean の確認をしない"
     'monitor'      = "jfs.cmd monitor [-Port 番号] [-AllowFrom 範囲]`n  リソースモニター (CPU / メモリ / GPU) を設置・更新します。既定のポートは 8000。`n  モニターは jfs.cmd start のサーバー管理ウィンドウの中で、ユーザーのサーバーと一緒に動きます。"
     'monitor-stop' = "jfs.cmd monitor-stop`n  リソースモニターを停止します (再開は jfs.cmd monitor)。"
     'doctor'       = "jfs.cmd doctor [ユーザー名]`n  ユーザー名を付けると、そのユーザーの実行用アカウントとして各フォルダを読めるかのテストも行います。`n  つながらないときの診断です。アカウント・自動起動タスク・待ち受けポート・HTTP 応答・`n  ファイアウォール・ネットワークの種類・ログを確認し、問題のある箇所に [NG] を表示します。"
@@ -391,6 +393,138 @@ function Test-VenvBase([string]$Venv) {
         }
     }
     return $false
+}
+
+# pyvenv.cfg の値を読む (venv の Python は実行しない)
+function Get-VenvConfigValue([string]$VenvDir, [string]$Key) {
+    $cfgFile = Join-Path $VenvDir 'pyvenv.cfg'
+    if (-not (Test-Path -LiteralPath $cfgFile -PathType Leaf) -or (Test-ReparsePoint $cfgFile)) { return $null }
+    foreach ($line in [System.IO.File]::ReadAllLines($cfgFile)) {
+        if ($line -match "^\s*$([regex]::Escape($Key))\s*=\s*(.+?)\s*$") { return $Matches[1] }
+    }
+    return $null
+}
+
+# venv の土台を作り直すときに使う Python。元の Python (pyvenv.cfg の home) が全員向けにインストールされたものなら
+# 同じバージョンを保つためにそれを使い、そうでなければサーバーの Python を使う
+function Get-VenvRepairPython($Config, [string]$VenvDir) {
+    $venvHome = Get-VenvConfigValue $VenvDir 'home'
+    if ($venvHome) {
+        foreach ($c in @(Find-PythonCandidates | Where-Object { $_.Shared -and $_.Version })) {
+            if ((Split-Path -Parent $c.Path).TrimEnd('\') -ieq $venvHome.TrimEnd('\')) { return $c.Path }
+        }
+    }
+    return (Get-BasePythonOrThrow $Config)
+}
+
+# work の中の場所 (本人が作った venv など) を絶対パスにする。work の外やリンクを通る場所は受け付けない
+function Resolve-WorkPath($Paths, [string]$Relative) {
+    $work = $Paths.Work.TrimEnd('\')
+    $full = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($work, $Relative)).TrimEnd('\')
+    if (-not $full.StartsWith("$work\", [StringComparison]::OrdinalIgnoreCase)) {
+        throw "work フォルダの中の場所を指定してください: $Relative"
+    }
+    $cur = $work
+    foreach ($part in $full.Substring($work.Length + 1).Split('\')) {
+        $cur = Join-Path $cur $part
+        if (Test-ReparsePoint $cur) { throw "リンクになっている場所は指定できません: $cur" }
+    }
+    return $full
+}
+
+# 本人のアカウントでコマンド (バッチの行) を実行し、出力を表示して返す。
+# 本人が中身を変えられる venv の Python などを、管理者の権限で実行しないために使う
+function Invoke-AsUser($UserEnv, [string[]]$Lines, [string]$Label, [int]$TimeoutSeconds = 1800) {
+    $p = Get-InstancePaths $UserEnv
+    $out = Join-Path $p.Logs 'maintenance.txt'
+    $cmdFile = Join-Path $p.Tmp 'maintenance.cmd'
+    Remove-LinksOnPath $p.Server $cmdFile
+    Remove-LinksOnPath $p.Root $out
+    Remove-Item -LiteralPath $cmdFile, $out -Force -ErrorAction SilentlyContinue
+    $body = @('@echo off', "call :main > `"$out`" 2>&1", 'exit /b %ERRORLEVEL%', ':main',
+        "set `"HOME=$($p.Home)`"", "set `"USERPROFILE=$($p.Home)`"",
+        "set `"APPDATA=$($p.Home)\AppData\Roaming`"", "set `"LOCALAPPDATA=$($p.Home)\AppData\Local`"",
+        "set `"TEMP=$($p.Tmp)`"", "set `"TMP=$($p.Tmp)`"", "set `"PIP_CACHE_DIR=$($p.Home)\.cache\pip`"",
+        'set "PYTHONUTF8=1"', 'set "PYTHONUNBUFFERED=1"', "cd /d `"$($p.Work)`"") + $Lines + @('echo JFS-DONE', 'exit /b 0')
+    Write-BatchFile $cmdFile ($body -join "`r`n")
+
+    $taskName = "jfs-maint-$($UserEnv.name)"
+    $lines = New-Object System.Collections.Generic.List[string]
+    try {
+        Register-JfsTask $taskName (Get-AccountName $UserEnv) $cmdFile $p.Tmp "jupyter-for-share: $Label" -OnDemand
+        Start-ScheduledTask -TaskPath $script:TaskPath -TaskName $taskName
+        $tail = New-LogTail $out
+        $started = Get-Date
+        $done = $false
+        while (-not $done) {
+            Start-Sleep -Seconds 2
+            foreach ($l in (Read-LogTail $tail)) {
+                $lines.Add($l)
+                if ($l -match '^JFS-DONE') { $done = $true } elseif ($l -notmatch '^JFS-') { Write-Host "    $l" -ForegroundColor DarkGray }
+            }
+            $t = Get-JfsTask $taskName
+            $running = $t -and [string]$t.State -eq 'Running'
+            $elapsed = ((Get-Date) - $started).TotalSeconds
+            if (-not $done -and -not $running -and $elapsed -gt 10) {
+                Start-Sleep -Seconds 1
+                foreach ($l in (Read-LogTail $tail)) { $lines.Add($l) }
+                break
+            }
+            if ($elapsed -gt $TimeoutSeconds) {
+                Stop-ScheduledTask -TaskPath $script:TaskPath -TaskName $taskName -ErrorAction SilentlyContinue
+                throw "$Label が $([int]($TimeoutSeconds / 60)) 分以内に終わりませんでした (途中までの出力: $out)"
+            }
+        }
+    } finally {
+        $t = Get-JfsTask $taskName
+        if ($t) { Unregister-ScheduledTask -InputObject $t -Confirm:$false }
+        # 一時的なタスクの登録でパスワードを変えたので、本来のタスクを登録し直す
+        Register-UserTask $UserEnv
+    }
+    if (-not (Test-Path -LiteralPath $out)) { throw "本人のアカウントで実行できませんでした ($Label)。'jfs.cmd doctor $($UserEnv.name)' で確認してください。" }
+    return $lines.ToArray()
+}
+
+# venv を修復する: Python 本体・pip・ipykernel が動くかを本人のアカウントで確かめ、壊れているものだけ直す。
+# インストール済みのパッケージ (Lib\site-packages) はそのまま残す
+function Repair-UserVenv($Config, $UserEnv, [string]$VenvDir, [string]$BasePython = '') {
+    $py = Join-Path $VenvDir 'Scripts\python.exe'
+    if (-not $BasePython) { $BasePython = Get-VenvRepairPython $Config $VenvDir }
+    $systemSite = (Get-VenvConfigValue $VenvDir 'include-system-site-packages') -eq 'true'
+    # 土台 (pyvenv.cfg・python.exe・元の Python) が無ければ、最初から土台を作り直す
+    $force = -not ((Test-Path -LiteralPath $py) -and (Test-VenvBase $VenvDir))
+    $venvArgs = '-m venv --upgrade --without-pip' + $(if ($systemSite) { ' --system-site-packages' } else { '' })
+    Write-Info "venv を確認しています: $VenvDir"
+    $lines = @(Invoke-AsUser $UserEnv @(
+        "set `"PY=$py`"",
+        "set `"BASE=$BasePython`"",
+        "set `"VENV=$VenvDir`"",
+        $(if ($force) { 'goto rebuild' } else { 'rem' }),
+        '"%PY%" -c "import sys" >nul 2>&1 && goto checks',
+        ':rebuild',
+        'echo JFS-REBUILD',
+        "`"%BASE%`" $venvArgs `"%VENV%`"",
+        ':checks',
+        '"%PY%" -c "import sys; print(''JFS-PYTHON-OK '' + sys.version.split()[0])" || (echo JFS-PYTHON-NG & exit /b 1)',
+        '"%PY%" -m pip --version >nul 2>&1 || (echo JFS-PIP-REPAIR & "%PY%" -m ensurepip --upgrade --default-pip)',
+        '"%PY%" -m pip --version >nul 2>&1 && echo JFS-PIP-OK || echo JFS-PIP-NG',
+        '"%PY%" -c "import ipykernel" >nul 2>&1 || (echo JFS-IPYKERNEL-REPAIR & "%PY%" -m pip install --disable-pip-version-check ipykernel)',
+        '"%PY%" -c "import ipykernel; print(''JFS-IPYKERNEL-OK '' + ipykernel.__version__)" || echo JFS-IPYKERNEL-NG'
+    ) 'venv の修復')
+    $has = { param($k) [bool]@($lines | Where-Object { $_ -match "^$k" }).Count }
+    if (& $has 'JFS-REBUILD') { Write-Ok 'Python 本体 (venv の土台) を作り直しました (パッケージは残しています)。' }
+    $pyLine = @($lines | Where-Object { $_ -match '^JFS-PYTHON-OK' }) | Select-Object -First 1
+    Write-Check ([bool]$pyLine) ("Python: " + $(if ($pyLine) { ($pyLine -replace '^JFS-PYTHON-OK\s*', '') } else { '動きません' }))
+    if (& $has 'JFS-PIP-REPAIR') { Write-Info 'pip が無かったため入れ直しました。' }
+    Write-Check (& $has 'JFS-PIP-OK') 'pip'
+    if (& $has 'JFS-IPYKERNEL-REPAIR') { Write-Info 'ipykernel が無かったため入れ直しました。' }
+    $ikLine = @($lines | Where-Object { $_ -match '^JFS-IPYKERNEL-OK' }) | Select-Object -First 1
+    Write-Check ([bool]$ikLine) ("ipykernel (ノートブックのカーネル)" + $(if ($ikLine) { ': ' + ($ikLine -replace '^JFS-IPYKERNEL-OK\s*', '') } else { '' }))
+    if (-not ($pyLine -and (& $has 'JFS-PIP-OK') -and $ikLine)) {
+        throw ("修復できませんでした (詳細: $((Get-InstancePaths $UserEnv).Logs)\maintenance.txt)。" +
+               "空の状態から作り直すには -Clean を付けて実行してください (入れたパッケージは消えます)。")
+    }
+    Write-Ok "venv を修復しました: $VenvDir"
 }
 
 # ノートブックで venv の Python を使うためのカーネルを、JupyterLab 側 (.server\lab) に登録する。
@@ -2549,19 +2683,34 @@ try {
         'reset-venv' {
             $cfg = Read-Config
             $u = Get-RequiredUser $cfg $Name
-            if (-not $Force) {
-                $ans = Read-Host "ユーザー '$($u.name)' の venv を作り直します (追加したパッケージは消えます)。よろしいですか? [y/N]"
+            $up = Get-InstancePaths $u
+            $isMain = -not $Venv
+            $target = if ($isMain) { $up.Venv } else { Resolve-WorkPath $up $Venv }
+            if (-not $isMain -and -not $Clean -and -not (Test-Path -LiteralPath $target)) { throw "venv が見つかりません: $target" }
+            if ($Clean -and -not $Force) {
+                $ans = Read-Host "venv $target を空の状態から作り直します (入れたパッケージは消えます)。よろしいですか? [y/N]"
                 if ($ans -notmatch '^[yY]') { Write-Info '中止しました。'; break }
             }
+            # 作り直す前に、元の Python (同じバージョン) を確かめておく
+            $basePy = if (Test-Path -LiteralPath $target) { Get-VenvRepairPython $cfg $target } else { Get-BasePythonOrThrow $cfg }
+            # venv のファイルが使用中だと直せないので、本人のサーバー (カーネルを含む) を止めてから行う
             $inHub = [bool](Get-HubProcess) -and (Test-Wanted (Get-Wanted) $u.name)
             if ($inHub) { Suspend-UserEnv $u }
             else { Stop-JfsTask (Get-TaskName $u) (Get-AccountName $u) "ユーザー '$($u.name)' の環境" }
             try {
-                $venv = (Get-InstancePaths $u).Venv
-                Remove-TreeSafe $venv
                 $sid = New-ServiceAccount (Get-AccountName $u) "jupyter-for-share: $($u.name)"
                 Initialize-InstanceFolders $u $sid
-                Install-UserVenv $cfg $u
+                if ($Clean) {
+                    Remove-TreeSafe $target
+                    Write-Ok "削除しました: $target"
+                }
+                # 空のフォルダなら新しく作る (中身があるものは、管理者の権限では venv の Python を動かさずに本人のアカウントで直す)
+                if ($isMain -and @(Get-ChildItem -LiteralPath $target -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+                    Install-UserVenv $cfg $u
+                } else {
+                    Repair-UserVenv $cfg $u $target $basePy
+                }
+                if ($isMain) { Register-VenvKernel $u }
             } finally {
                 if ($inHub) { Resume-UserEnv $u }
             }

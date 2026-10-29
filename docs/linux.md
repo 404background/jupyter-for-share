@@ -104,7 +104,7 @@ tmux attach -t jfs                # あとでサーバー管理ウィンドウ�
 | `./jfs.sh set <名前> -Port 23456` | ポートを変更 (`-AllowFrom 192.168.0.0/16` で接続を許可する相手も変更) |
 | `./jfs.sh logs <名前> [-Follow]` | 実行したコマンドの記録とサーバーのログ (`logs monitor` でモニターのログ) |
 | `./jfs.sh upgrade [名前]` | JupyterLab 本体を最新にする (venv のパッケージはそのまま) |
-| `./jfs.sh reset-venv <名前>` | venv を作り直す (入れたパッケージは消える。work のファイルは残る) |
+| `./jfs.sh reset-venv <名前> [-Venv sam3_env] [-Clean]` | venv を修復 (Python 本体・pip・ipykernel を本人のアカウントで確かめ、壊れているものだけ直す。入れたパッケージは残す)。`-Venv` で本人が work に作った venv、`-Clean` で空の状態から作り直し |
 | `./jfs.sh monitor [-Port 8000]` / `monitor-stop` | リソースモニターを設置・変更 / 停止 |
 | `./jfs.sh network [-Yes]` | 他の PC から接続できるように、ファイアウォールと mDNS を確認・設定 |
 | `./jfs.sh doctor [名前]` | つながらないときの診断 (`[NG]` の項目に原因を表示) |

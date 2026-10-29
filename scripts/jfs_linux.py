@@ -1747,17 +1747,111 @@ def cmd_upgrade(cfg, a):
         suspend_for(cfg, u, lambda u=u: (install_jupyterlab(cfg, u, upgrade=True), register_kernel(u)))
 
 
+def venv_config_value(venv, key):
+    """pyvenv.cfg の値を読む (venv の Python は実行しない)"""
+    try:
+        with os.fdopen(open_regular(os.path.join(venv, "pyvenv.cfg"), os.O_RDONLY), encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"\s*%s\s*=\s*(.+?)\s*$" % re.escape(key), line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    return None
+
+
+def venv_repair_python(cfg, venv):
+    """venv の土台を作り直すときの Python: 元の Python (同じバージョン) が残っていればそれ、無ければサーバーの Python"""
+    home = venv_config_value(venv, "home")
+    if home:
+        for n in ("python3", "python"):
+            if os.path.exists(os.path.join(home, n)):
+                return os.path.join(home, n)
+    return base_python_or_raise(cfg)
+
+
+def resolve_work_path(u, rel):
+    """work の中の場所 (本人が作った venv など)。work の外やリンクを通る場所は受け付けない"""
+    work = paths(u)["work"].rstrip("/")
+    full = os.path.normpath(os.path.join(work, rel))
+    if not full.startswith(work + "/"):
+        raise JfsError("work フォルダの中の場所を指定してください: " + rel)
+    cur = work
+    for part in full[len(work) + 1:].split("/"):
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            raise JfsError("リンクになっている場所は指定できません: " + cur)
+    return full
+
+
+def repair_user_venv(cfg, u, venv, base=None):
+    """venv を修復する: Python 本体・pip・ipykernel が動くかを本人のアカウントで確かめ、壊れているものだけ直す。
+    インストール済みのパッケージ (lib/pythonX.Y/site-packages) はそのまま残す"""
+    py = os.path.join(venv, "bin", "python")
+    base = base or venv_repair_python(cfg, venv)
+    kw = as_user_kwargs(u)
+
+    def works(args):
+        try:
+            return subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw).returncode == 0
+        except OSError:
+            return False
+
+    info("venv を確認しています: " + venv)
+    if not (os.path.exists(py) and venv_base_exists(venv) and works([py, "-c", "import sys"])):
+        args = [base, "-m", "venv", "--upgrade", "--without-pip"]
+        if venv_config_value(venv, "include-system-site-packages") == "true":
+            args.append("--system-site-packages")
+        run(args + [venv], quiet=True, **as_user_kwargs(u))
+        ok("Python 本体 (venv の土台) を作り直しました (パッケージは残しています)。")
+    version = ""
+    with _suppress():   # 本人のアカウントで実行する (venv の Python は管理者の権限では動かさない)
+        version = subprocess.run([py, "-c", "import sys; print(sys.version.split()[0])"], stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, universal_newlines=True, **kw).stdout
+    check(bool(version.strip()), "Python: " + (version.strip() or "動きません"))
+    if not works([py, "-m", "pip", "--version"]):
+        info("pip が無いため入れ直します。")
+        run([py, "-m", "ensurepip", "--upgrade", "--default-pip"], quiet=True, check_rc=False, **as_user_kwargs(u))
+    pip_ok = works([py, "-m", "pip", "--version"])
+    check(pip_ok, "pip")
+    if pip_ok and not works([py, "-c", "import ipykernel"]):
+        info("ipykernel が無いため入れ直します。")
+        run([py, "-m", "pip", "install", "--disable-pip-version-check", "ipykernel"], quiet=True, check_rc=False,
+            **as_user_kwargs(u))
+    ik_ok = works([py, "-c", "import ipykernel"])
+    check(ik_ok, "ipykernel (ノートブックのカーネル)")
+    if not (version.strip() and pip_ok and ik_ok):
+        raise JfsError("修復できませんでした。空の状態から作り直すには -Clean を付けて実行してください (入れたパッケージは消えます)。")
+    ok("venv を修復しました: " + venv)
+
+
 def cmd_reset_venv(cfg, a):
     u = required_user(cfg, a.name)
-    if not a.force and not ask_yes("ユーザー '%s' の venv を作り直します (追加したパッケージは消えます)。よろしいですか?" % u["name"]):
+    p = paths(u)
+    main = not a.venv
+    target = p["venv"] if main else resolve_work_path(u, a.venv)
+    if not main and not a.clean and not os.path.isdir(target):
+        raise JfsError("venv が見つかりません: " + target)
+    if a.clean and not a.force and not ask_yes("venv %s を空の状態から作り直します (入れたパッケージは消えます)。よろしいですか?" % target):
         info("中止しました。")
         return
+    base = venv_repair_python(cfg, target) if os.path.isdir(target) else base_python_or_raise(cfg)
 
     def reset():
-        remove_tree(paths(u)["venv"])
+        if a.clean:
+            remove_tree(target)
+            ok("削除しました: " + target)
         pw = pwd.getpwnam(account_name(u))
         init_instance_folders(u, pw.pw_uid, pw.pw_gid)
-        install_user_venv(cfg, u)
+        if main and not os.path.exists(os.path.join(target, "pyvenv.cfg")) and not os.listdir(target):
+            install_user_venv(cfg, u)       # 空なので新しく作る (本人のアカウントで)
+        else:
+            if not main and not os.path.isdir(target):
+                os.makedirs(target)
+                os.chown(target, pw.pw_uid, pw.pw_gid)
+            repair_user_venv(cfg, u, target, base)
+        if main:
+            register_kernel(u)
     suspend_for(cfg, u, reset)
 
 
@@ -2103,7 +2197,7 @@ HELP = """jupyter-for-share 管理コマンド (Linux)
   ./jfs.sh set <ユーザー名> -Port 番号   ポートなどを変更
   ./jfs.sh logs <ユーザー名> [-Follow]   ログと実行コマンドの記録を表示
   ./jfs.sh upgrade [ユーザー名]          JupyterLab を更新
-  ./jfs.sh reset-venv <ユーザー名>       venv を作り直す
+  ./jfs.sh reset-venv <ユーザー名>       venv を修復 (パッケージは残す。-Venv で work 内の venv、-Clean で空から作り直し)
 
 リソースモニター (CPU / メモリ / GPU)
   ./jfs.sh monitor [-Port 8000]          設置・更新 (サーバー管理ウィンドウの中で動く)
@@ -2126,7 +2220,8 @@ class Args:
         self.allow_from = []
         self.domain = ""
         self.force = self.keep_files = self.new = self.follow = self.yes = False
-        self.delete_files = self.skip_monitor = False
+        self.delete_files = self.skip_monitor = self.clean = False
+        self.venv = ""
         rest = list(argv)
         positional = []
 
@@ -2162,6 +2257,10 @@ class Args:
                     self.yes = True
                 elif key == "deletefiles":
                     self.delete_files = True
+                elif key == "clean":
+                    self.clean = True
+                elif key == "venv":
+                    self.venv = value(x)
                 elif key == "skipmonitor":
                     self.skip_monitor = True
                 elif key in ("h", "help", "?"):
