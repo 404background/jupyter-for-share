@@ -794,6 +794,17 @@ def copy_ca_bundle(u):
             return
 
 
+def memory_limit_mb(cfg, u):
+    """メモリの上限 (MB)。ユーザーごとの memoryLimitGB、なければ defaults.memoryLimitGB。どちらもなければ 0 (上限なし)"""
+    for v in (u.get("memoryLimitGB"), dget(cfg, "memoryLimitGB", 0)):
+        try:
+            if v and float(v) > 0:
+                return int(round(float(v) * 1024))
+        except (TypeError, ValueError):
+            pass
+    return 0
+
+
 def user_env(u):
     p = paths(u)
     acct = account_name(u)
@@ -818,6 +829,7 @@ def user_env(u):
         "VIRTUAL_ENV": p["venv"],
         "PYTHONUNBUFFERED": "1",
         "JFS_COMMAND_LOG": p["cmdlog"],
+        "JFS_MEMORY_LIMIT_MB": str(memory_limit_mb(read_config(), u)),
         "GIT_TERMINAL_PROMPT": "1",
     })
 
@@ -1370,6 +1382,34 @@ def load_fresh_module():
     return mod
 
 
+def invoke_hub_supervised():
+    """サーバー管理ウィンドウを開く。その処理 (jfs_linux.py hub) は子プロセスとして動かし、
+    エラーやメモリ不足などで異常終了したときは、同じ端末で自動的に再開する。
+    (Ctrl+C・端末を閉じる・jfs.sh stop で全員を止めた、など普通に終わったときは再開しない)"""
+    quick_fails = 0
+    while True:
+        started = time.time()
+        proc = subprocess.Popen([sys.executable, os.path.join(SCRIPTS_DIR, "jfs_linux.py"), "hub"])
+        while True:
+            try:
+                code = proc.wait()
+                break
+            except KeyboardInterrupt:
+                continue   # Ctrl+C は子にも届き、子が全員のサーバーを止めて終わるので、それを待つ
+        if code == 0:
+            return
+        w = get_wanted()
+        if not w["all"] and not w["users"] and not w["hold"]:
+            return   # 全員の停止を指示された
+        quick_fails = quick_fails + 1 if time.time() - started < 60 else 0
+        if quick_fails >= 5:
+            raise JfsError("サーバー管理の処理が起動直後の異常終了を 5 回続けたため、自動での再開をやめました (終了コード %s)。"
+                           "上の表示を確認してください。" % code)
+        print()
+        warn("サーバー管理の処理が異常終了しました (終了コード %s)。10 秒後に自動で再開し、全員のサーバーを起動し直します。" % code)
+        time.sleep(10)
+
+
 def invoke_hub():
     if hub_pid():
         raise JfsError("サーバー管理ウィンドウは既に開いています。")
@@ -1511,9 +1551,11 @@ def cmd_list(cfg, a):
     if not cfg["users"]:
         info("ユーザー環境はまだありません。'%s add <ユーザー名>' で作成してください。" % CMD)
     else:
-        print("%-16s %-7s %s" % ("ユーザー", "ポート", "状態"))
+        print("%-16s %-7s %-10s %s" % ("ユーザー", "ポート", "メモリ上限", "状態"))
         for u in cfg["users"]:
-            print("%-16s %-7s %s" % (u["name"], u["port"], user_status(cfg, u, wanted, hub)))
+            mb = memory_limit_mb(cfg, u)
+            print("%-16s %-7s %-10s %s" % (u["name"], u["port"], ("%.1f GB" % (mb / 1024.0)) if mb else "なし",
+                                          user_status(cfg, u, wanted, hub)))
         print("(フォルダ: %s/<ユーザー名>)" % instances_root(cfg))
     print()
     m = cfg["monitor"]
@@ -1628,7 +1670,7 @@ def cmd_start(cfg, a):
         targets = cfg["users"]
         save_wanted(True, [], None if hub else [])
     if not hub:
-        invoke_hub()
+        invoke_hub_supervised()
         return
     info("サーバー管理ウィンドウは既に開いています。そちらで起動されるのを待っています...")
     for u in targets:
@@ -1705,7 +1747,15 @@ def cmd_set(cfg, a):
     if a.allow_from:
         cfg["defaults"]["allowFrom"] = a.allow_from
         info("接続を許可する相手は全ユーザー共通の設定です (defaults.allowFrom)。")
-    if not a.port and not a.allow_from:
+    if a.memory_limit is not None:
+        if a.memory_limit > 0:
+            u["memoryLimitGB"] = a.memory_limit
+            ok("ユーザー '%s' のメモリの上限を %s GB にします (超えた処理は MemoryError になります)。" % (u["name"], a.memory_limit))
+        else:
+            u.pop("memoryLimitGB", None)
+            mb = memory_limit_mb(cfg, u)
+            ok("ユーザー '%s' のメモリの上限を%s。" % (u["name"], "全員共通の設定 (%.1f GB) にします" % (mb / 1024.0) if mb else "外しました"))
+    if not a.port and not a.allow_from and a.memory_limit is None:
         raise JfsError("変更する内容を指定してください。例: %s set %s -Port 23456" % (CMD, u["name"]))
     save_config(cfg)
     sync_firewall(cfg)
@@ -2221,7 +2271,7 @@ HELP = """jupyter-for-share 管理コマンド (Linux)
   ./jfs.sh stop|restart [ユーザー名]     停止 / 再起動 (省略で全員)
   ./jfs.sh remove <ユーザー名>           フォルダごと削除 (-KeepFiles でフォルダは残す)
   ./jfs.sh token <ユーザー名> -New       トークンを再発行
-  ./jfs.sh set <ユーザー名> -Port 番号   ポートなどを変更
+  ./jfs.sh set <ユーザー名> -Port 番号   ポートなどを変更 (-MemoryLimitGB 16 でメモリの上限。0 で外す)
   ./jfs.sh logs <ユーザー名> [-Follow]   ログと実行コマンドの記録を表示
   ./jfs.sh upgrade [ユーザー名]          JupyterLab を更新
   ./jfs.sh reset-venv <ユーザー名>       venv を修復 (パッケージは残す。-Venv で work 内の venv、-Clean で空から作り直し)
@@ -2249,6 +2299,7 @@ class Args:
         self.force = self.keep_files = self.new = self.follow = self.yes = False
         self.delete_files = self.skip_monitor = self.clean = False
         self.venv = ""
+        self.memory_limit = None
         rest = list(argv)
         positional = []
 
@@ -2284,6 +2335,12 @@ class Args:
                     self.yes = True
                 elif key == "deletefiles":
                     self.delete_files = True
+                elif key == "memorylimitgb":
+                    v = value(x)
+                    try:
+                        self.memory_limit = float(v)
+                    except ValueError:
+                        raise JfsError("%s には数字を指定してください: %s" % (x, v))
                 elif key == "clean":
                     self.clean = True
                 elif key == "venv":

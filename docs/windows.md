@@ -109,7 +109,7 @@ PC の再起動やサインアウトでサーバー管理ウィンドウは閉�
 | `jfs.cmd restart [名前]` | 再起動 (更新を反映するときなど) |
 | `jfs.cmd remove <名前> [-KeepFiles] [-Force]` | 環境をフォルダごと削除 (`-KeepFiles` でフォルダは残す) |
 | `jfs.cmd token <名前> -New` | トークンを再発行 (古い URL は使えなくなる) |
-| `jfs.cmd set <名前> -Port 23456` | ポートを変更 (`-AllowFrom 192.168.0.0/16` で接続を許可する相手も変更) |
+| `jfs.cmd set <名前> -Port 23456` | ポートを変更 (`-AllowFrom 192.168.0.0/16` で接続を許可する相手、`-MemoryLimitGB 16` でメモリの上限も変更。上限は既定でなし、`0` で外す) |
 | `jfs.cmd logs <名前> [-Follow]` | 実行したコマンドの記録とサーバーのログ (`logs monitor` でモニターのログ) |
 | `jfs.cmd upgrade [名前]` | JupyterLab 本体を最新にする (venv のパッケージはそのまま) |
 | `jfs.cmd reset-venv <名前> [-Venv sam3_env] [-Clean]` | venv を修復 (Python 本体・pip・ipykernel を本人のアカウントで確かめ、壊れているものだけ直す。入れたパッケージは残す)。`-Venv` で本人が work に作った venv、`-Clean` で空の状態から作り直し |

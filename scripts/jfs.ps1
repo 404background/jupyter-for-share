@@ -29,6 +29,7 @@ param(
     [switch]$SetPrivate,
     [switch]$Clean,
     [string]$Venv,
+    [double]$MemoryLimitGB,
     [switch]$PauseAtEnd
 )
 
@@ -44,7 +45,7 @@ $script:Commands = @('help', 'list', 'add', 'doctor', 'network', 'set', 'remove'
 $script:CommandHelp = @{
     'list'         = "jfs.cmd list`n  ユーザー環境 (ユーザー名・ポート・状態・フォルダ) とリソースモニターの状態を一覧表示します。"
     'add'          = "jfs.cmd add <ユーザー名>`n  ユーザー環境を作成し、接続用 URL を表示します (サーバー管理ウィンドウが動いていればそこで起動。なければ jfs.cmd start で起動)。`n  フォルダは user\<ユーザー名>、ポートは空いている番号から自動で決まります。`n  ユーザー名は半角英数字とハイフン (16 文字以内)。`n例: jfs.cmd add alice"
-    'set'          = "jfs.cmd set <ユーザー名> [-Port 番号] [-AllowFrom 範囲]`n  ポートや、接続を許可する相手 (ファイアウォール) を変更して再起動します。`n例: jfs.cmd set alice -Port 23456`n    jfs.cmd set alice -AllowFrom 192.168.1.0/24,192.168.2.10"
+    'set'          = "jfs.cmd set <ユーザー名> [-Port 番号] [-AllowFrom 範囲] [-MemoryLimitGB 数]`n  ポートや、接続を許可する相手 (ファイアウォール)、メモリの上限を変更して再起動します。`n  -MemoryLimitGB: この人のメモリの上限 (GB)。超えた処理は MemoryError になり、PC 全体や他の人には影響しません。`n    既定は上限なし。0 を指定すると上限を外します (servers.json の defaults.memoryLimitGB があればそれに戻ります)。`n例: jfs.cmd set alice -Port 23456`n    jfs.cmd set alice -AllowFrom 192.168.1.0/24,192.168.2.10"
     'remove'       = "jfs.cmd remove <ユーザー名> [-KeepFiles] [-Force]`n  ユーザー環境 (実行用アカウント・自動起動・ファイアウォール規則) を、フォルダ user\<ユーザー名> ごと削除します。`n  -KeepFiles: フォルダは残す`n  -Force: 確認せずに削除"
     'start'        = "jfs.cmd start [ユーザー名]`n  サーバーを起動します。省略または all で全員分。`n  サーバー管理ウィンドウがまだなければ、実行したこのウィンドウがサーバー管理ウィンドウになり (新しいウィンドウは開きません)、`n  全員のサーバーのログと実行したコマンドを [ユーザー名] 付きで表示し続けます。`n  ウィンドウを閉じる (または Ctrl+C) と全員のサーバーが停止します。`n  既にサーバー管理ウィンドウがあるときは、そちらで起動されるのを待って終わります。"
     'stop'         = "jfs.cmd stop [ユーザー名]`n  そのユーザーのサーバーを停止します。省略または all で全員を停止し、サーバー管理ウィンドウも閉じます。"
@@ -558,6 +559,14 @@ function Write-BatchFile([string]$Path, [string]$Content) {
 
 # ---- 起動スクリプトと Jupyter の設定 ----
 
+# メモリの上限 (MB)。ユーザーごとの memoryLimitGB、なければ defaults.memoryLimitGB。どちらもなければ 0 (上限なし)
+function Get-MemoryLimitMB($Config, $UserEnv) {
+    $gb = [double](Get-Value $UserEnv 'memoryLimitGB' 0)
+    if ($gb -le 0) { $gb = [double](Get-Value $Config.defaults 'memoryLimitGB' 0) }
+    if ($gb -le 0) { return 0 }
+    return [int][math]::Round($gb * 1024)
+}
+
 function Write-ServerFiles($Config, $UserEnv) {
     $p = Get-InstancePaths $UserEnv
     $bind = [string](Get-Value $Config.defaults 'bindAddress' '0.0.0.0')
@@ -626,6 +635,7 @@ rem this file while the server is running (jfs.cmd refresh, setup.cmd, git pull)
   set "PSExecutionPolicyPreference=RemoteSigned"
   set "GCM_GUI_PROMPT=false"
   set "JFS_COMMAND_LOG=@@CMDLOG@@"
+  set "JFS_MEMORY_LIMIT_MB=@@MEMMB@@"
   cd /d "@@WORK@@"
   if exist "@@LOG@@" for %%F in ("@@LOG@@") do if %%~zF GTR 10485760 move /y "@@LOG@@" "@@LOG@@.1" >nul
   echo ===== %DATE% %TIME% start >> "@@LOG@@"
@@ -637,6 +647,7 @@ rem this file while the server is running (jfs.cmd refresh, setup.cmd, git pull)
         HOME = $p.Home; TMP = $p.Tmp; CONFIG = $p.Config; DATA = $p.Data; RUNTIME = $p.Runtime
         VENV = $p.Venv; WORK = $p.Work; LOG = $p.Log; LABVENV = $p.LabVenv
         CMDLOG = $p.CommandLog; LAUNCHER = $p.Launcher; HEARTBEAT = $p.Heartbeat
+        MEMMB = [string](Get-MemoryLimitMB $Config $UserEnv)
     }
     Write-BatchFile $p.RunCmd $cmd
     Write-UserReadme $Config $UserEnv
@@ -1064,7 +1075,7 @@ function Start-Users($Config, [string]$UserName) {
         if ($hub) { Save-Wanted $true @() } else { Save-Wanted $true @() @() }
     }
     if (-not $hub) {
-        Invoke-Hub
+        Invoke-HubSupervised
         return
     }
     Write-Info 'サーバー管理ウィンドウは既に開いています。そちらで起動されるのを待っています...'
@@ -1233,6 +1244,31 @@ function Show-KernelHint([string]$UserName, [string]$Line) {
     $script:KernelHints[$key] = $true
     Write-UserLine $UserName "[jupyter-for-share] このカーネルの Python に ipykernel が入っていないため、カーネルが起動できません。"
     Write-UserLine $UserName "[jupyter-for-share] 本人のターミナルで次を実行してもらってください: & `"$py`" -m pip install ipykernel"
+}
+
+# サーバー管理ウィンドウを開く。その処理 (jfs.ps1 hub) は子プロセスとして動かし、
+# エラーやメモリ不足などで異常終了したときは、同じウィンドウで自動的に再開する。
+# (Ctrl+C・ウィンドウを閉じる・jfs.cmd stop で全員を止めた、など普通に終わったときは再開しない)
+function Invoke-HubSupervised {
+    $ps = Join-Path $PSHOME 'powershell.exe'
+    $jfs = Join-Path $script:RepoRoot 'scripts\jfs.ps1'
+    $quickFails = 0
+    while ($true) {
+        $started = Get-Date
+        & $ps -NoProfile -ExecutionPolicy Bypass -File $jfs hub
+        $code = $LASTEXITCODE
+        # 0: 普通に終わった / 0xC000013A: Ctrl+C
+        if ($code -eq 0 -or $code -eq -1073741510) { return }
+        $w = Get-Wanted
+        if (-not $w.all -and @($w.users).Count -eq 0 -and @($w.hold).Count -eq 0) { return }   # 全員の停止を指示された
+        if (((Get-Date) - $started).TotalSeconds -lt 60) { $quickFails++ } else { $quickFails = 0 }
+        if ($quickFails -ge 5) {
+            throw "サーバー管理の処理が起動直後の異常終了を 5 回続けたため、自動での再開をやめました (終了コード $code)。上の表示を確認してください。"
+        }
+        Write-Host ''
+        Write-Host "[!] サーバー管理の処理が異常終了しました (終了コード $code)。10 秒後に自動で再開し、全員のサーバーを起動し直します。" -ForegroundColor Yellow
+        Start-Sleep -Seconds 10
+    }
 }
 
 # サーバー管理ウィンドウの本体 (jfs.ps1 hub)
@@ -2492,9 +2528,11 @@ try {
             $cfg = Read-Config
             $users = @($cfg.users)
             if ($users.Count -gt 0) {
-                Write-Host ('{0,-18}{1,-8}{2}' -f 'ユーザー', 'ポート', '状態')
+                Write-Host ('{0,-18}{1,-8}{2,-10}{3}' -f 'ユーザー', 'ポート', 'メモリ上限', '状態')
                 foreach ($s in $users) {
-                    Write-Host ('{0,-18}{1,-8}{2}' -f $s.name, $s.port, (Get-UserStatus $s))
+                    $mb = Get-MemoryLimitMB $cfg $s
+                    $mem = if ($mb -gt 0) { "$([math]::Round($mb / 1024, 1)) GB" } else { 'なし' }
+                    Write-Host ('{0,-18}{1,-8}{2,-10}{3}' -f $s.name, $s.port, $mem, (Get-UserStatus $s))
                 }
                 Write-Host "(フォルダ: $(Get-InstancesRoot $cfg)\<ユーザー名>)"
                 Write-Host ''
@@ -2579,6 +2617,17 @@ try {
             if ($bound.ContainsKey('AllowFrom')) {
                 $list = Get-AllowFromList $AllowFrom
                 if ($list.Count -gt 0) { Set-Value $u 'allowFrom' $list } else { Remove-Value $u 'allowFrom' }
+            }
+            if ($bound.ContainsKey('MemoryLimitGB')) {
+                if ($MemoryLimitGB -gt 0) {
+                    Set-Value $u 'memoryLimitGB' $MemoryLimitGB
+                    Write-Ok "ユーザー '$($u.name)' のメモリの上限を $MemoryLimitGB GB にします (超えた処理は MemoryError になります)。"
+                } else {
+                    Remove-Value $u 'memoryLimitGB'
+                    $mb = Get-MemoryLimitMB $cfg $u
+                    if ($mb -gt 0) { Write-Ok "ユーザー '$($u.name)' のメモリの上限は、全員共通の設定 ($([math]::Round($mb / 1024, 1)) GB) になります。" }
+                    else { Write-Ok "ユーザー '$($u.name)' のメモリの上限を外しました。" }
+                }
             }
             Save-Config $cfg
             Write-ServerFiles $cfg $u
@@ -2823,7 +2872,7 @@ try {
     }
 } catch {
     Write-Host "[x] $($_.Exception.Message)" -ForegroundColor Red
-    if ($PauseAtEnd -or $Command -eq 'hub') { Complete-Window -Failed }
+    if ($PauseAtEnd) { Complete-Window -Failed }   # hub はサーバー管理ウィンドウが自動で再開するので、Enter を待たない
     exit 1
 }
 # 管理者権限で開き直したウィンドウは、終わったら閉じる (表示が目的のコマンドは読めるように Enter で閉じる)

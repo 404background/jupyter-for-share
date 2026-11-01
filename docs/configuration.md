@@ -21,6 +21,7 @@ setup が `servers.example.json` をコピーして `servers.json` を作りま�
 | `labLocale` | `ja_JP` | JupyterLab の表示言語 (`en` で英語) | 共通 |
 | `extraServerPackages` | `[]` | JupyterLab 側に追加するパッケージ (例: `"jupyterlab-git"`) | 共通 |
 | `venvPackages` | `[]` | 新しく作る venv に最初から入れるパッケージ (例: `["numpy", "pandas"]`) | 共通 |
+| `memoryLimitGB` | (なし = 上限なし) | 全員共通のメモリの上限 (GB)。各ユーザーの `memoryLimitGB` が優先されます (下記) | 共通 |
 | `autoUpdateMinutes` | `60` | サーバー管理ウィンドウが `git pull` で自動更新する間隔 (分)。`0` で自動更新しない | 共通 |
 | `firewallProfiles` | `Any` | ファイアウォール規則を有効にするネットワークの種類 | Windows |
 | `protectedPaths` | `["auto"]` | アクセスを禁止する場所。`"auto"` は自動選択。`["auto", "D:\\data"]` のように追加できる | Windows |
@@ -45,3 +46,14 @@ setup が `servers.example.json` をコピーして `servers.json` を作りま�
 | `port` | ポート (`jfs.cmd set <名前> -Port` で変更) |
 | `path` | 環境のフォルダ |
 | `token` | 接続用トークン (`jfs.cmd token <名前> -New` で再発行) |
+| `memoryLimitGB` | (任意) この人のメモリの上限 (GB)。`jfs.cmd set <名前> -MemoryLimitGB 16` で設定、`0` で外す |
+
+### メモリの上限について
+
+既定ではメモリに上限はありません。必要な人にだけ `memoryLimitGB` を設定できます。
+上限を超えて確保しようとした処理は失敗し、Python では `MemoryError` になります (PC 全体のメモリが尽きて、他の人のサーバーまで止まることを防ぎます)。
+
+- Windows: プロセス (カーネルなど) 1 つごとに上限まで。その人のプロセスの合計も「上限 + 1 GB」まで (JupyterLab 本体が動き続けるための余裕)
+- Linux: プロセス 1 つごとに上限まで (確保したデータ領域の大きさ)
+- GPU のメモリは対象外です
+- 変更は `jfs.cmd set` で再起動したときから反映されます

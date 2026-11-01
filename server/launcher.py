@@ -8,6 +8,12 @@ jfs.ps1 が各ユーザー環境の .server\\config にコピーし、run.cmd �
   更新が HEARTBEAT_TIMEOUT 秒止まったら (ウィンドウが閉じられたら) JupyterLab を停止します。
 - Windows のジョブオブジェクトに入れておくことで、このランチャーが終了したときに
   JupyterLab が起動したカーネルやターミナルもまとめて終了させます。
+- 環境変数 JFS_MEMORY_LIMIT_MB が設定されていれば (jfs の set -MemoryLimitGB)、メモリの上限を設けます。
+  上限を超えて確保しようとした処理は失敗し、Python では MemoryError になります
+  (PC 全体のメモリが尽きて、他の人のサーバーまで止まることを防ぐ)。設定がなければ上限はありません。
+  - Windows: 1 つのプロセス (カーネルなど) ごとに上限まで。この人のプロセスの合計も、上限 + 1 GB まで
+    (JupyterLab 本体が動き続けられる余裕を残す)
+  - Linux: 1 つのプロセスごとに上限まで (確保したデータ領域の大きさ。GPU のメモリは含まない)
 """
 
 import ctypes
@@ -24,7 +30,15 @@ def log(message):
     print("[jupyter-for-share] " + message, flush=True)
 
 
-def create_kill_on_close_job():
+def memory_limit_bytes():
+    try:
+        mb = int(float(os.environ.get("JFS_MEMORY_LIMIT_MB", "0") or 0))
+    except ValueError:
+        return 0
+    return mb * 1024 * 1024 if mb > 0 else 0
+
+
+def create_kill_on_close_job(memory_limit=0):
     """このプロセスと子孫を、ランチャー終了時にまとめて終了させるジョブオブジェクトに入れる"""
     from ctypes import wintypes
 
@@ -57,6 +71,8 @@ def create_kill_on_close_job():
         ]
 
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+    JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x0100
+    JOB_OBJECT_LIMIT_JOB_MEMORY = 0x0200
     JobObjectExtendedLimitInformation = 9
 
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -73,6 +89,10 @@ def create_kill_on_close_job():
         return None
     info = EXTENDED_LIMIT()
     info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if memory_limit:
+        info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY
+        info.ProcessMemoryLimit = memory_limit
+        info.JobMemoryLimit = memory_limit + 1024 * 1024 * 1024
     if not k32.SetInformationJobObject(job, JobObjectExtendedLimitInformation,
                                        ctypes.byref(info), ctypes.sizeof(info)):
         return None
@@ -91,10 +111,24 @@ def heartbeat_age(path):
 def main():
     heartbeat = sys.argv[1] if len(sys.argv) > 1 else ""
     job = None
+    limit = memory_limit_bytes()
     if os.name == "nt":
-        job = create_kill_on_close_job()
+        job = create_kill_on_close_job(limit)
         if job is None:
             log("警告: ジョブオブジェクトを作成できませんでした。停止時にカーネルが残る場合があります。")
+            if limit:
+                log("警告: メモリの上限を設定できませんでした。")
+    elif limit:
+        import resource
+        try:
+            # 確保するデータ領域 (malloc など) の上限。超えると MemoryError になる。
+            # 仮想アドレス空間全体 (RLIMIT_AS) ではないので、CUDA などの大きな予約には影響しない
+            resource.setrlimit(resource.RLIMIT_DATA, (limit, limit))
+        except (ValueError, OSError) as e:
+            log("警告: メモリの上限を設定できませんでした (%s)" % e)
+            limit = 0
+    if limit:
+        log("メモリの上限: %.1f GB (超えた処理は MemoryError になります)" % (limit / 1024.0 ** 3))
 
     proc = subprocess.Popen([sys.executable, "-m", "jupyterlab"])
     log("JupyterLab を起動しました (pid %d)" % proc.pid)
