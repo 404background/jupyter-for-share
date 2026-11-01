@@ -85,6 +85,28 @@ git clone https://github.com/xxx/yyy.git
 
 HTTPS で非公開リポジトリを使う場合は、ターミナルでユーザー名と個人アクセストークンを入力します。
 
+## Codex などの AI エージェントを使う場合
+
+この環境は、OS のアカウントの権限で「自分のフォルダの中だけ」に制限されています。
+そのため、Codex CLI などが独自に用意するサンドボックスは、この中では動かないことがあります
+(Windows のサーバーで、サンドボックスの作成に失敗するなど)。
+
+その場合は、ツール側のサンドボックスを使わない設定にしてください。ツールが実行するコマンドは、
+ターミナルで自分が実行するのと同じ範囲 (自分の work・venv の読み書き、インターネット) に制限されたままです。
+
+Codex CLI の例 (実行前に確認を求める設定は残します):
+
+```
+codex --sandbox danger-full-access --ask-for-approval on-request
+```
+
+毎回指定しない場合は、`~/.codex/config.toml` (Windows のサーバーでは `user\<名前>\.server\home\.codex\config.toml`) に書きます。
+
+```toml
+sandbox_mode = "danger-full-access"
+approval_policy = "on-request"
+```
+
 ## サーバーの混み具合を見る
 
 `http://<サーバー名>.local:8000/` (リソースモニター) で、サーバーの CPU・メモリ・GPU の使用率を確認できます。
