@@ -449,7 +449,7 @@ function Invoke-AsUser($UserEnv, [string[]]$Lines, [string]$Label, [int]$Timeout
     Write-BatchFile $cmdFile ($body -join "`r`n")
 
     $taskName = "jfs-maint-$($UserEnv.name)"
-    $lines = New-Object System.Collections.Generic.List[string]
+    $outLines = New-Object System.Collections.Generic.List[string]
     try {
         Register-JfsTask $taskName (Get-AccountName $UserEnv) $cmdFile $p.Tmp "jupyter-for-share: $Label" -OnDemand
         Start-ScheduledTask -TaskPath $script:TaskPath -TaskName $taskName
@@ -459,7 +459,7 @@ function Invoke-AsUser($UserEnv, [string[]]$Lines, [string]$Label, [int]$Timeout
         while (-not $done) {
             Start-Sleep -Seconds 2
             foreach ($l in (Read-LogTail $tail)) {
-                $lines.Add($l)
+                $outLines.Add($l)
                 if ($l -match '^JFS-DONE') { $done = $true } elseif ($l -notmatch '^JFS-') { Write-Host "    $l" -ForegroundColor DarkGray }
             }
             $t = Get-JfsTask $taskName
@@ -467,7 +467,7 @@ function Invoke-AsUser($UserEnv, [string[]]$Lines, [string]$Label, [int]$Timeout
             $elapsed = ((Get-Date) - $started).TotalSeconds
             if (-not $done -and -not $running -and $elapsed -gt 10) {
                 Start-Sleep -Seconds 1
-                foreach ($l in (Read-LogTail $tail)) { $lines.Add($l) }
+                foreach ($l in (Read-LogTail $tail)) { $outLines.Add($l) }
                 break
             }
             if ($elapsed -gt $TimeoutSeconds) {
@@ -482,7 +482,7 @@ function Invoke-AsUser($UserEnv, [string[]]$Lines, [string]$Label, [int]$Timeout
         Register-UserTask $UserEnv
     }
     if (-not (Test-Path -LiteralPath $out)) { throw "本人のアカウントで実行できませんでした ($Label)。'jfs.cmd doctor $($UserEnv.name)' で確認してください。" }
-    return $lines.ToArray()
+    return $outLines.ToArray()
 }
 
 # venv を修復する: Python 本体・pip・ipykernel が動くかを本人のアカウントで確かめ、壊れているものだけ直す。
@@ -2699,11 +2699,13 @@ try {
             else { Stop-JfsTask (Get-TaskName $u) (Get-AccountName $u) "ユーザー '$($u.name)' の環境" }
             try {
                 $sid = New-ServiceAccount (Get-AccountName $u) "jupyter-for-share: $($u.name)"
-                Initialize-InstanceFolders $u $sid
                 if ($Clean) {
                     Remove-TreeSafe $target
                     Write-Ok "削除しました: $target"
                 }
+                # 本来の venv フォルダが無いときだけ、フォルダとアクセス権を作り直す
+                # (毎回行うと、ユーザーのフォルダ全体のアクセス権を付け直すことになり時間がかかる)
+                if ($isMain -and -not (Test-Path -LiteralPath $target)) { Initialize-InstanceFolders $u $sid }
                 # 空のフォルダなら新しく作る (中身があるものは、管理者の権限では venv の Python を動かさずに本人のアカウントで直す)
                 if ($isMain -and @(Get-ChildItem -LiteralPath $target -Force -ErrorAction SilentlyContinue).Count -eq 0) {
                     Install-UserVenv $cfg $u

@@ -1073,6 +1073,10 @@ def remove_wanted(cfg, name):
         save_wanted(False, [x for x in w["users"] if x != name])
 
 
+def held_marker(name):
+    return os.path.join(RUNTIME_DIR, "held-%s" % name)
+
+
 def set_hold(name, on):
     w = get_wanted()
     hold = [x for x in w["hold"] if x != name] + ([name] if on else [])
@@ -1207,6 +1211,11 @@ def hub_tick(state):
                 st["active"] = False
             if held:
                 running += 1
+                # 止め終わったことを、一時停止を頼んだコマンド (reset-venv など) に知らせる
+                marker = held_marker(name)
+                if not os.path.exists(marker):
+                    with _suppress():
+                        write_text_atomic(marker, "stopped", 0o600)
             continue
         running += 1
         state["ever_ran"] = True
@@ -1727,19 +1736,30 @@ def cmd_logs(cfg, a):
 
 
 def suspend_for(cfg, u, fn):
+    """サーバー管理ウィンドウにそのユーザーのサーバーを止めてもらい、止め終わってから fn を実行する。
+    (止める処理の最後に、そのアカウントのプロセスがすべて終了させられるので、待たずに始めると fn も止められてしまう)"""
     in_hub = bool(hub_pid()) and is_wanted(get_wanted(), u["name"])
     if in_hub:
+        marker = held_marker(u["name"])
+        with _suppress():
+            os.unlink(marker)
         set_hold(u["name"], True)
-        deadline = time.time() + 15
-        while port_listening(u["port"]) and time.time() < deadline:
+        info("ユーザー '%s' のサーバーを一時停止しています..." % u["name"])
+        deadline = time.time() + 60
+        while not os.path.exists(marker) and time.time() < deadline:
             time.sleep(0.5)
-    else:
-        kill_account_processes(account_name(u))
+    kill_account_processes(account_name(u))
     try:
         fn()
     finally:
         if in_hub:
             set_hold(u["name"], False)
+            with _suppress():
+                os.unlink(held_marker(u["name"]))
+            if wait_listening(u["port"]):
+                ok("ユーザー '%s' の環境を再開しました (ポート %s)。" % (u["name"], u["port"]))
+            else:
+                warn("ユーザー '%s' の環境が起動しませんでした。サーバー管理ウィンドウの表示を確認してください。" % u["name"])
 
 
 def cmd_upgrade(cfg, a):
@@ -1784,6 +1804,13 @@ def resolve_work_path(u, rel):
     return full
 
 
+def show_failure(p):
+    """失敗したコマンドの出力の末尾を表示する"""
+    if p.returncode != 0:
+        for line in (p.stdout or "").splitlines()[-15:]:
+            print("    " + line)
+
+
 def repair_user_venv(cfg, u, venv, base=None):
     """venv を修復する: Python 本体・pip・ipykernel が動くかを本人のアカウントで確かめ、壊れているものだけ直す。
     インストール済みのパッケージ (lib/pythonX.Y/site-packages) はそのまま残す"""
@@ -1811,13 +1838,13 @@ def repair_user_venv(cfg, u, venv, base=None):
     check(bool(version.strip()), "Python: " + (version.strip() or "動きません"))
     if not works([py, "-m", "pip", "--version"]):
         info("pip が無いため入れ直します。")
-        run([py, "-m", "ensurepip", "--upgrade", "--default-pip"], quiet=True, check_rc=False, **as_user_kwargs(u))
+        show_failure(run([py, "-m", "ensurepip", "--upgrade", "--default-pip"], quiet=True, check_rc=False, **as_user_kwargs(u)))
     pip_ok = works([py, "-m", "pip", "--version"])
     check(pip_ok, "pip")
     if pip_ok and not works([py, "-c", "import ipykernel"]):
         info("ipykernel が無いため入れ直します。")
-        run([py, "-m", "pip", "install", "--disable-pip-version-check", "ipykernel"], quiet=True, check_rc=False,
-            **as_user_kwargs(u))
+        show_failure(run([py, "-m", "pip", "install", "--disable-pip-version-check", "ipykernel"], quiet=True,
+                         check_rc=False, **as_user_kwargs(u)))
     ik_ok = works([py, "-c", "import ipykernel"])
     check(ik_ok, "ipykernel (ノートブックのカーネル)")
     if not (version.strip() and pip_ok and ik_ok):
