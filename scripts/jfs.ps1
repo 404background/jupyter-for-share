@@ -192,7 +192,15 @@ function ConvertTo-UserName([string]$UserName) {
 # ---- ポート ----
 
 function Test-PortListening([int]$P) {
-    return [bool](Get-NetTCPConnection -LocalPort $P -State Listen -ErrorAction SilentlyContinue)
+    # WMI (Get-NetTCPConnection) を使わない: メモリ不足などで WMI が応答しなくなると、呼び出し側が止まってしまうため
+    try {
+        foreach ($ep in [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()) {
+            if ($ep.Port -eq $P) { return $true }
+        }
+        return $false
+    } catch {
+        return [bool](Get-NetTCPConnection -LocalPort $P -State Listen -ErrorAction SilentlyContinue)
+    }
 }
 
 function Get-ReservedPorts($Config, [string]$Except) {
@@ -858,7 +866,31 @@ function Get-HubPaths {
         Dir    = $dir
         Record = Join-Path $dir 'hub.json'
         Wanted = Join-Path $dir 'hub-wanted.json'
+        Alive  = Join-Path $dir 'hub-alive'   # サーバー管理の処理が毎秒更新する (止まっていないかの確認用)
     }
+}
+
+# サーバー管理の処理が、応答しなくなってから自動で強制終了・再開するまでの秒数
+$script:HubStallSeconds = 120
+
+# ファイルの最終更新からの秒数 (ファイルが無ければ $null)
+function Get-FileAgeSeconds([string]$Path) {
+    try {
+        $f = Get-Item -LiteralPath $Path -ErrorAction Stop
+        return ((Get-Date) - $f.LastWriteTime).TotalSeconds
+    } catch { return $null }
+}
+
+# サーバー管理ウィンドウは開いているが、処理が止まっている (応答しない) か
+function Test-HubStalled($UserEnv = $null, [int]$Seconds = 60) {
+    $hp = Get-HubPaths
+    $age = Get-FileAgeSeconds $hp.Alive
+    if ($null -ne $age) { return ($age -gt $Seconds) }
+    # hub-alive を書かない古い版のウィンドウ: ユーザーのハートビートが止まっていれば止まっているとみなす
+    if (-not $UserEnv) { return $false }
+    $hb = Get-FileAgeSeconds (Get-InstancePaths $UserEnv).Heartbeat
+    $wantedAge = Get-FileAgeSeconds $hp.Wanted
+    return ($null -ne $hb -and $hb -gt $Seconds -and ($null -eq $wantedAge -or $wantedAge -gt $Seconds))
 }
 
 function Write-JsonFile([string]$Path, $Object) {
@@ -946,6 +978,9 @@ function Get-UserStatus($UserEnv) {
     $hub = [bool](Get-HubProcess)
     $wanted = Test-Wanted (Get-Wanted) $UserEnv.name
     if ($hub -and $wanted -and $listening) { return '起動中' }
+    if ($hub -and $wanted -and (Test-HubStalled $UserEnv)) {
+        return "停止 (サーバー管理ウィンドウが応答していません。$($script:HubStallSeconds) 秒ほどで自動的に再開します。再開しない場合はそのウィンドウを閉じて 'jfs.cmd start')"
+    }
     if ($hub -and $wanted) { return '起動処理中' }
     if ($listening) { return "起動中 (管理ウィンドウの外で動いています。'jfs.cmd restart $($UserEnv.name)' で切り替え)" }
     return '停止'
@@ -1249,16 +1284,64 @@ function Show-KernelHint([string]$UserName, [string]$Line) {
 # サーバー管理ウィンドウを開く。その処理 (jfs.ps1 hub) は子プロセスとして動かし、
 # エラーやメモリ不足などで異常終了したときは、同じウィンドウで自動的に再開する。
 # (Ctrl+C・ウィンドウを閉じる・jfs.cmd stop で全員を止めた、など普通に終わったときは再開しない)
+# コンソール (conhost) の簡易編集モードを切る。オンのままだとウィンドウ内をクリックしただけで「選択」状態になり、
+# 表示 (Write-Host) で処理が止まってハートビートが途切れ、全員のサーバーが停止してしまうため。
+# (コピーはウィンドウ左上のメニュー → 編集 → 範囲指定 でできる。Windows ターミナルではこの設定は使われない)
+function Disable-ConsoleQuickEdit {
+    try {
+        if (-not ('JfsConsoleMode' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class JfsConsoleMode {
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr GetStdHandle(int nStdHandle);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetConsoleMode(IntPtr h, out uint mode);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleMode(IntPtr h, uint mode);
+}
+'@
+        }
+        $h = [JfsConsoleMode]::GetStdHandle(-10)   # 標準入力
+        $mode = [uint32]0
+        if ([JfsConsoleMode]::GetConsoleMode($h, [ref]$mode)) {
+            # ENABLE_QUICK_EDIT_MODE (0x40) を外し、ENABLE_EXTENDED_FLAGS (0x80) を付ける
+            [void][JfsConsoleMode]::SetConsoleMode($h, (($mode -band (-bnot [uint32]0x40)) -bor [uint32]0x80))
+        }
+    } catch { }
+}
+
 function Invoke-HubSupervised {
+    Disable-ConsoleQuickEdit
     $ps = Join-Path $PSHOME 'powershell.exe'
     $jfs = Join-Path $script:RepoRoot 'scripts\jfs.ps1'
+    $alive = (Get-HubPaths).Alive
     $quickFails = 0
     while ($true) {
         $started = Get-Date
-        & $ps -NoProfile -ExecutionPolicy Bypass -File $jfs hub
-        $code = $LASTEXITCODE
+        Remove-Item -LiteralPath $alive -ErrorAction SilentlyContinue
+        $proc = Start-Process -FilePath $ps -NoNewWindow -PassThru `
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$jfs`"", 'hub')
+        $null = $proc.Handle   # 終了コードを後で取得するために必要
+        $stalled = $false
+        try {
+            # 処理が止まっていないか (hub-alive が更新されているか) を見張る。
+            # メモリ不足などで WMI・タスク スケジューラーの呼び出しが戻らなくなると、プロセスは残ったまま
+            # ハートビートだけが止まり、全員のサーバーが停止したままになるため、強制終了して再開する
+            while (-not $proc.WaitForExit(2000)) {
+                $age = Get-FileAgeSeconds $alive
+                if ($null -ne $age -and $age -gt $script:HubStallSeconds) {
+                    $stalled = $true
+                    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                    [void]$proc.WaitForExit(15000)
+                    break
+                }
+            }
+        } finally {
+            # Ctrl+C のときは、子プロセスが全員のサーバーを止め終わるのを待つ
+            if (-not $proc.HasExited) { [void]$proc.WaitForExit(30000) }
+        }
+        $code = if ($stalled) { '応答なし' } else { $proc.ExitCode }
         # 0: 普通に終わった / 0xC000013A: Ctrl+C
-        if ($code -eq 0 -or $code -eq -1073741510) { return }
+        if (-not $stalled -and ($code -eq 0 -or $code -eq -1073741510)) { return }
         $w = Get-Wanted
         if (-not $w.all -and @($w.users).Count -eq 0 -and @($w.hold).Count -eq 0) { return }   # 全員の停止を指示された
         if (((Get-Date) - $started).TotalSeconds -lt 60) { $quickFails++ } else { $quickFails = 0 }
@@ -1266,7 +1349,13 @@ function Invoke-HubSupervised {
             throw "サーバー管理の処理が起動直後の異常終了を 5 回続けたため、自動での再開をやめました (終了コード $code)。上の表示を確認してください。"
         }
         Write-Host ''
-        Write-Host "[!] サーバー管理の処理が異常終了しました (終了コード $code)。10 秒後に自動で再開し、全員のサーバーを起動し直します。" -ForegroundColor Yellow
+        if ($stalled) {
+            Write-Host ("[!] サーバー管理の処理が $($script:HubStallSeconds) 秒以上応答しなかったため、強制終了しました " +
+                        '(メモリ不足などで Windows の管理機能が応答しなくなった可能性があります)。') -ForegroundColor Yellow
+            Write-Host '    10 秒後に自動で再開し、全員のサーバーを起動し直します。' -ForegroundColor Yellow
+        } else {
+            Write-Host "[!] サーバー管理の処理が異常終了しました (終了コード $code)。10 秒後に自動で再開し、全員のサーバーを起動し直します。" -ForegroundColor Yellow
+        }
         Start-Sleep -Seconds 10
     }
 }
@@ -1304,6 +1393,7 @@ function Invoke-Hub {
             }
         } catch { }
         while ($true) {
+            try { [System.IO.File]::WriteAllText($hp.Alive, (Get-Date).ToString('o')) } catch { }
             if (((Get-Date) - $lastConfigRead).TotalSeconds -ge 5) {
                 try { $cfg = Read-Config } catch { }   # 読めなかったときは前回の設定のまま続ける
                 $lastConfigRead = Get-Date
@@ -1414,7 +1504,7 @@ function Invoke-Hub {
             Remove-Item -LiteralPath $monitor.Heartbeat -ErrorAction SilentlyContinue
             Stop-JfsTask 'jfs-monitor' $script:MonitorAccount 'リソースモニター'
         }
-        Remove-Item -LiteralPath $hp.Record -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $hp.Record, $hp.Alive -ErrorAction SilentlyContinue
         $Host.UI.RawUI.WindowTitle = $oldTitle
     }
 }
@@ -1500,11 +1590,13 @@ function Get-ServerHosts($Config) {
     # コンピューター名は .local 付き (mDNS) だけを表示する。付けない名前は、つながらない環境が多いため
     $hosts += "$($env:COMPUTERNAME.ToLowerInvariant()).local"
     try {
+        # LAN のアドレスを先に、VPN (Tailscale / ZeroTier など) のアドレスを後に並べる
         $hosts += @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
             Where-Object {
                 $_.IPAddress -notmatch '^(127\.|169\.254\.)' -and
                 $_.InterfaceAlias -notmatch 'vEthernet|WSL|Loopback|Bluetooth'
             } |
+            Sort-Object { if ($_.InterfaceAlias -match 'Tailscale|ZeroTier|VPN|WireGuard|OpenVPN|TAP') { 1 } else { 0 } }, InterfaceIndex |
             Select-Object -ExpandProperty IPAddress)
     } catch { }
     return $hosts
@@ -2142,6 +2234,22 @@ function Get-NetworkPlan($Config, [switch]$SetPrivate, [switch]$Quiet) {
     if (-not $Quiet) { Write-Host '-- コンピューター名での接続 --' -ForegroundColor White }
     $cn = $env:COMPUTERNAME.ToLowerInvariant()
     & $say $true "コンピューター名: $cn (URL では http://$($cn).local:<ポート>/)"
+    # Windows は名前の問い合わせに、このPCのすべてのアドレス (WSL・Hyper-V の仮想アダプターや VPN を含む) を返す。
+    # 接続する PC がその中から届かないアドレスを選ぶと、IP アドレスではつながるのに名前ではつながらない (ことがある) 状態になる
+    $allAddr = @(Get-LanAdapters)
+    if ($allAddr.Count -gt 1) {
+        & $say $false ("このPCには IPv4 アドレスが $($allAddr.Count) 個あります ($(@($allAddr | ForEach-Object { "$($_.Alias)=$($_.Address -replace '/\d+$', '')" }) -join ', '))。" +
+            "$cn.local などの名前を引くとこれらがすべて返り、接続する PC によっては届かないアドレス (WSL・VPN など) が選ばれてつながらないことがあります")
+        if (-not $Quiet) {
+            Write-Host '       名前で確実につなぐには、ルーター (DNS) か接続する PC の hosts に、このPCの LAN の IP アドレスでドメイン名を登録してください'
+            Write-Host '       (下の「このPCのアドレス」と README の「ドメイン名でアクセスする」)。登録できない場合は IP アドレスの URL を使ってください。'
+        }
+    }
+    foreach ($a in @(Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Dhcp -ErrorAction SilentlyContinue |
+                     Where-Object { $_.InterfaceAlias -notmatch 'vEthernet|WSL|Loopback|Bluetooth' })) {
+        & $say $true ("$($a.InterfaceAlias) のアドレス $($a.IPAddress) は DHCP で割り当てられているため、変わることがあります " +
+            '(IP アドレスの URL や hosts に登録したアドレスが使えなくなったら、ルーターでこのPCのアドレスを固定してください)')
+    }
     $lanIndexes = @(Get-LanAdapters | Where-Object { -not $_.Virtual -and -not $_.Tailscale } | ForEach-Object { $_.Index })
     foreach ($c in @(Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction SilentlyContinue)) {
         if ($lanIndexes -notcontains $c.InterfaceIndex) { continue }

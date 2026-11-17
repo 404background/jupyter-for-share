@@ -153,7 +153,9 @@ jfs.cmd network -SetPrivate
 
 1. **`<コンピューター名>.local`** (設定不要): URL にはこの形が表示されます。分かりやすい名前にするには
    サーバー PC の名前を変更します (PowerShell で `Rename-Computer -NewName jupyter-pc` → 再起動)。
-   つながらない場合は `jfs.cmd network` で名前解決の設定を確認してください
+   つながらない場合は `jfs.cmd network` で名前解決の設定を確認してください。
+   WSL・Hyper-V・VPN (Tailscale / ZeroTier など) のアダプターがある PC では、名前を引くとそれらのアドレスも返るため、
+   接続する PC によっては届かないアドレスが選ばれて、ときどきつながらないことがあります。その場合は 2. か 3. で LAN の IP アドレスを登録してください
 2. **ルーター / 社内 DNS に登録** (おすすめ): ルーターでサーバー PC の IP を固定し、`jupyter.home.arpa → 192.168.1.10` のような名前を登録して、
    `setup.cmd -Domain jupyter.home.arpa` を実行します
 3. **接続する PC の hosts に登録**: 接続する Windows PC で次を実行します (管理者権限)。Mac / Linux では `/etc/hosts` に追記します
@@ -213,6 +215,7 @@ jupyter-for-share が Windows に加えた変更を、**記録に頼らず探し
 | --- | --- |
 | 別の PC からつながらない | `jfs.cmd list` で「起動中」か確認 → `jfs.cmd network -SetPrivate` → サーバー PC で `http://localhost:<ポート>/` が開けるか確認 |
 | `<名前>.local` でつながらない | `jfs.cmd network` で名前解決を確認。だめなら IP アドレスの URL か、[ルーター / hosts に登録](#名前-ドメイン名-でアクセスする) |
+| `jfs.cmd list` が「起動処理中」のまま | サーバー管理ウィンドウの処理が止まっていると「停止 (サーバー管理ウィンドウが応答していません…)」と表示され、2 分ほどで自動的に再開します。古い版のウィンドウでは自動で再開しないので、ウィンドウを閉じて `jfs.cmd start` |
 | 接続元が別のサブネット | `jfs.cmd set <名前> -AllowFrom 192.168.0.0/16` のように許可範囲を広げる |
 | 起動時に PermissionError | `jfs.cmd doctor <名前>` が、実行用アカウントとして各フォルダを読めるかをテストし、読めない場所を表示します |
 | 処理が途中で止まり、Enter で進む | ウィンドウ内をクリックすると「選択」状態になって止まります。Esc か Enter で再開します |
